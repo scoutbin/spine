@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/scoutbin/spine/cli"
+	"github.com/scoutbin/spine/internal/dist"
 	"github.com/scoutbin/spine/internal/manifest"
 	"github.com/scoutbin/spine/internal/release"
 )
@@ -23,7 +24,8 @@ const Contract = 1
 func Run(args []string, stdout, stderr io.Writer) int {
 	root := &cli.Root{
 		Command:  cli.Command{Name: "spine", Summary: "Development tool for projects built on spine"},
-		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout)},
+		Globals:  []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
+		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand()},
 	}
 	return root.Execute(args, nil, stdout, stderr)
 }
@@ -32,13 +34,8 @@ func manifestCommand(stdout io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:    "manifest",
 		Summary: "Print the contract number and the manifest values as key=value lines",
-		Flags:   []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
 		Run: func(ctx *cli.Context) error {
-			data, err := os.ReadFile(ctx.String("manifest"))
-			if err != nil {
-				return err
-			}
-			tool, err := manifest.Load(data)
+			tool, err := loadTool(ctx)
 			if err != nil {
 				return err
 			}
@@ -73,6 +70,38 @@ func classifyCommand(stdout io.Writer) *cli.Command {
 			)
 		},
 	}
+}
+
+func distCommand() *cli.Command {
+	return &cli.Command{
+		Name:    "dist",
+		Summary: "Build the release archives and checksums.txt for every target",
+		Flags: []cli.Flag{
+			{Name: "version", Kind: cli.KindString, Help: "Release version with a leading v, such as v1.2.3 or v0.0.0-ci"},
+			{Name: "package", Kind: cli.KindString, Default: ".", Help: "Main package to build"},
+			{Name: "out", Kind: cli.KindString, Default: "dist", Help: "Directory to write the artifacts to"},
+		},
+		Run: func(ctx *cli.Context) error {
+			tool, err := loadTool(ctx)
+			if err != nil {
+				return err
+			}
+			return dist.Build(dist.Options{
+				Tool:    tool,
+				Version: ctx.String("version"),
+				Package: ctx.String("package"),
+				OutDir:  ctx.String("out"),
+			})
+		},
+	}
+}
+
+func loadTool(ctx *cli.Context) (manifest.Tool, error) {
+	data, err := os.ReadFile(ctx.String("manifest"))
+	if err != nil {
+		return manifest.Tool{}, err
+	}
+	return manifest.Load(data)
 }
 
 func enabled(value string) string { return fmt.Sprint(value != "") }
