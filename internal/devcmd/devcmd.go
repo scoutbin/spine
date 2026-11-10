@@ -5,6 +5,7 @@ package devcmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -104,7 +105,7 @@ func distCommand() *cli.Command {
 func genCommand() *cli.Command {
 	return &cli.Command{
 		Name:    "gen",
-		Summary: "Write the generated files of the tool: install.sh and install.ps1",
+		Summary: "Write the generated files of the tool: install.sh, install.ps1 and, if the action channel is enabled, action.yml",
 		Flags: []cli.Flag{
 			{Name: "check", Kind: cli.KindBool, Help: "Fail if a file differs from what would be generated, and write nothing"},
 			{Name: "out", Kind: cli.KindString, Default: ".", Help: "Repository root to write the files to"},
@@ -119,7 +120,7 @@ func genCommand() *cli.Command {
 				return err
 			}
 			if ctx.Bool("check") {
-				return checkFiles(ctx.String("out"), files)
+				return checkFiles(ctx.String("out"), files, render.Disabled(tool))
 			}
 			return writeFiles(ctx.String("out"), files)
 		},
@@ -139,7 +140,7 @@ func writeFiles(dir string, files []render.File) error {
 	return nil
 }
 
-func checkFiles(dir string, files []render.File) error {
+func checkFiles(dir string, files []render.File, disabled []string) error {
 	var stale []string
 	for _, f := range files {
 		path := filepath.Join(dir, f.Path)
@@ -159,8 +160,21 @@ func checkFiles(dir string, files []render.File) error {
 			stale = append(stale, f.Path)
 		}
 	}
+	var problems []string
 	if len(stale) > 0 {
-		return fmt.Errorf("out of date: %s; run go tool spine gen", strings.Join(stale, ", "))
+		problems = append(problems, fmt.Sprintf("out of date: %s; run go tool spine gen", strings.Join(stale, ", ")))
+	}
+	for _, path := range disabled {
+		_, err := os.Stat(filepath.Join(dir, path))
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err == nil {
+			problems = append(problems, fmt.Sprintf("unexpected: %s (action channel disabled)", path))
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
 }

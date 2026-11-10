@@ -2,6 +2,7 @@ package devcmd_test
 
 import (
 	"bytes"
+	"cmp"
 	"io"
 	"maps"
 	"os"
@@ -150,28 +151,35 @@ func TestGen(t *testing.T) {
 	}
 	testcases := []struct {
 		name      string
+		manifest  string            // spine.json content; testutil.Manifest when empty
 		generated bool              // run gen before the case
 		edits     map[string]string // files rewritten before the case
 		chmod     map[string]os.FileMode
 		args      []string
 		wantCode  int
 		stderrHas string
-		wantFresh bool // files match a fresh gen afterwards; otherwise the directory is untouched
+		wantFresh bool     // files match a fresh gen afterwards; otherwise the directory is untouched
+		wantFiles []string // file names in the directory afterwards, when set
 	}{
-		{name: "writes the files", args: []string{"gen"}, wantFresh: true},
+		{name: "writes the files", args: []string{"gen"}, wantFresh: true, wantFiles: []string{"action.yml", "install.ps1", "install.sh"}},
+		{name: "writes no action.yml when the action channel is disabled", manifest: testutil.MinimalManifest, args: []string{"gen"}, wantFresh: true, wantFiles: []string{"install.ps1", "install.sh"}},
+		{name: "check passes without action.yml when the action channel is disabled", manifest: testutil.MinimalManifest, generated: true, args: []string{"gen", "--check"}, wantFresh: true, wantFiles: []string{"install.ps1", "install.sh"}},
+		{name: "check fails on a leftover action.yml when the action channel is disabled", manifest: testutil.MinimalManifest, generated: true, edits: map[string]string{"action.yml": "leftover\n"}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "unexpected: action.yml (action channel disabled)", wantFiles: []string{"action.yml", "install.ps1", "install.sh"}},
+		{name: "gen keeps a leftover action.yml when the action channel is disabled", manifest: testutil.MinimalManifest, generated: true, edits: map[string]string{"action.yml": "leftover\n"}, args: []string{"gen"}, wantFiles: []string{"action.yml", "install.ps1", "install.sh"}},
+		{name: "check fails on a drifted action.yml", generated: true, edits: map[string]string{"action.yml": "edited\n"}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: action.yml;"},
 		{name: "overwrites a drifted file", generated: true, edits: map[string]string{"install.sh": "edited\n"}, args: []string{"gen"}, wantFresh: true},
 		{name: "check passes on fresh files", generated: true, args: []string{"gen", "--check"}, wantFresh: true},
 		{name: "check fails on a drifted file", generated: true, edits: map[string]string{"install.sh": "edited\n"}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh;"},
 		{name: "check fails on a file that lost its executable bit", generated: true, chmod: map[string]os.FileMode{"install.sh": 0o644}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh;"},
 		{name: "overwrites the mode of an unchanged file", generated: true, chmod: map[string]os.FileMode{"install.sh": 0o644}, args: []string{"gen"}, wantFresh: true},
-		{name: "check fails on missing files and writes nothing", args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh, install.ps1;"},
+		{name: "check fails on missing files and writes nothing", args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh, install.ps1, action.yml;"},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.chmod) > 0 && runtime.GOOS == "windows" {
 				t.Skip("windows has no executable bit")
 			}
-			manifest := testutil.WriteManifest(t, testutil.Manifest)
+			manifest := testutil.WriteManifest(t, cmp.Or(tc.manifest, testutil.Manifest))
 			dir, fresh := t.TempDir(), t.TempDir()
 			withTarget := func(args []string, out string) []string {
 				return slices.Concat(args, []string{"--manifest", filepath.Join(manifest, "spine.json"), "--out", out})
@@ -202,6 +210,11 @@ func TestGen(t *testing.T) {
 			}
 			if !strings.Contains(stderr.String(), tc.stderrHas) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tc.stderrHas)
+			}
+			if tc.wantFiles != nil {
+				if got := keys(snapshot(t, dir)); !slices.Equal(got, tc.wantFiles) {
+					t.Errorf("files = %v, want %v", got, tc.wantFiles)
+				}
 			}
 			want := before
 			if tc.wantFresh {

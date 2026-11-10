@@ -5,6 +5,7 @@ package render
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -38,23 +39,35 @@ type data struct {
 
 var funcs = template.FuncMap{
 	"comment":    comment,
+	"yaml":       yaml,
 	"join":       strings.Join,
 	"trimPrefix": strings.TrimPrefix,
 }
 
+type spec struct {
+	path    string
+	mode    fs.FileMode
+	enabled bool
+}
+
+func specs(t manifest.Tool) []spec {
+	return []spec{
+		{"install.sh", 0o755, true},
+		{"install.ps1", 0o644, true},
+		{"action.yml", 0o644, t.Channels.Action},
+	}
+}
+
 // Files renders the files of t. spineVersion names the spine release in the
-// header of each file.
+// header of each file. action.yml is rendered only when the action channel is
+// enabled.
 func Files(t manifest.Tool, spineVersion string) ([]File, error) {
 	d := data{Tool: t, Generator: spineVersion, Tracks: trackPaths()}
-	specs := []struct {
-		path string
-		mode fs.FileMode
-	}{
-		{"install.sh", 0o755},
-		{"install.ps1", 0o644},
-	}
-	files := make([]File, 0, len(specs))
-	for _, s := range specs {
+	var files []File
+	for _, s := range specs(t) {
+		if !s.enabled {
+			continue
+		}
 		content, err := execute(s.path+".tmpl", d)
 		if err != nil {
 			return nil, fmt.Errorf("render %s: %w", s.path, err)
@@ -62,6 +75,17 @@ func Files(t manifest.Tool, spineVersion string) ([]File, error) {
 		files = append(files, File{Path: s.path, Mode: s.mode, Content: content})
 	}
 	return files, nil
+}
+
+// Disabled returns the paths of the generated files that t does not enable.
+func Disabled(t manifest.Tool) []string {
+	var paths []string
+	for _, s := range specs(t) {
+		if !s.enabled {
+			paths = append(paths, s.path)
+		}
+	}
+	return paths
 }
 
 // execute uses {% %} delimiters because the shell sources contain ${ directly
@@ -98,4 +122,30 @@ func comment(s string) string {
 		return unicode.IsControl(r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
 	})
 	return strings.Join(fields, " ")
+}
+
+// yaml renders s as a double-quoted YAML scalar. JSON string syntax is valid
+// YAML and escapes quotes, backslashes, line breaks and ASCII control
+// characters; the remaining unprintable characters, such as the Unicode line
+// breaks, are escaped here. A "${{" is split, so that s can never open a GitHub
+// Actions expression.
+func yaml(s string) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(strings.ReplaceAll(s, "${{", "$ {{")); err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	for _, r := range strings.TrimSuffix(buf.String(), "\n") {
+		switch {
+		case unicode.IsPrint(r):
+			out.WriteRune(r)
+		case r > 0xFFFF:
+			fmt.Fprintf(&out, `\U%08x`, r)
+		default:
+			fmt.Fprintf(&out, `\u%04x`, r)
+		}
+	}
+	return out.String(), nil
 }
