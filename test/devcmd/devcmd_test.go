@@ -3,6 +3,7 @@ package devcmd_test
 import (
 	"bytes"
 	"cmp"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -132,6 +133,9 @@ func TestGen(t *testing.T) {
 	snapshot := func(t *testing.T, dir string) map[string]string {
 		t.Helper()
 		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			return nil
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,6 +156,7 @@ func TestGen(t *testing.T) {
 	testcases := []struct {
 		name      string
 		manifest  string            // spine.json content; testutil.Manifest when empty
+		nested    string            // output path below the temp directory, which does not exist beforehand
 		generated bool              // run gen before the case
 		edits     map[string]string // files rewritten before the case
 		chmod     map[string]os.FileMode
@@ -160,6 +165,7 @@ func TestGen(t *testing.T) {
 		stderrHas string
 		wantFresh bool     // files match a fresh gen afterwards; otherwise the directory is untouched
 		wantFiles []string // file names in the directory afterwards, when set
+		wantNoDir bool     // the output directory still does not exist afterwards
 	}{
 		{name: "writes the files", args: []string{"gen"}, wantFresh: true, wantFiles: []string{"action.yml", "install.ps1", "install.sh"}},
 		{name: "writes no action.yml when the action channel is disabled", manifest: testutil.MinimalManifest, args: []string{"gen"}, wantFresh: true, wantFiles: []string{"install.ps1", "install.sh"}},
@@ -172,6 +178,8 @@ func TestGen(t *testing.T) {
 		{name: "check fails on a drifted file", generated: true, edits: map[string]string{"install.sh": "edited\n"}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh;"},
 		{name: "check fails on a file that lost its executable bit", generated: true, chmod: map[string]os.FileMode{"install.sh": 0o644}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh;"},
 		{name: "overwrites the mode of an unchanged file", generated: true, chmod: map[string]os.FileMode{"install.sh": 0o644}, args: []string{"gen"}, wantFresh: true},
+		{name: "creates a missing output directory", nested: "a/b", args: []string{"gen"}, wantFresh: true, wantFiles: []string{"action.yml", "install.ps1", "install.sh"}},
+		{name: "check fails on a missing output directory and does not create it", nested: "a/b", args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh, install.ps1, action.yml;", wantNoDir: true},
 		{name: "check fails on missing files and writes nothing", args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh, install.ps1, action.yml;"},
 	}
 	for _, tc := range testcases {
@@ -181,6 +189,7 @@ func TestGen(t *testing.T) {
 			}
 			manifest := testutil.WriteManifest(t, cmp.Or(tc.manifest, testutil.Manifest))
 			dir, fresh := t.TempDir(), t.TempDir()
+			dir = filepath.Join(dir, tc.nested)
 			withTarget := func(args []string, out string) []string {
 				return slices.Concat(args, []string{"--manifest", filepath.Join(manifest, "spine.json"), "--out", out})
 			}
@@ -216,6 +225,9 @@ func TestGen(t *testing.T) {
 					t.Errorf("files = %v, want %v", got, tc.wantFiles)
 				}
 			}
+			if _, err := os.Stat(dir); tc.wantNoDir && !os.IsNotExist(err) {
+				t.Errorf("output directory %s exists (stat error %v), want it missing", dir, err)
+			}
 			want := before
 			if tc.wantFresh {
 				want = snapshot(t, fresh)
@@ -229,4 +241,93 @@ func TestGen(t *testing.T) {
 
 func keys(m map[string]string) []string {
 	return slices.Sorted(maps.Keys(m))
+}
+
+func TestPackage(t *testing.T) {
+	const noChecksums = "-"
+	const release = "https://github.com/scoutbin/demo/releases/download/v1.2.3/"
+	wantFormula := []string{
+		`class Demo < Formula`,
+		`version "1.2.3"`,
+		`url "` + release + `demo_1.2.3_darwin_arm64.tar.gz"`,
+		`sha256 "` + fmt.Sprintf("%064x", 2) + `"`,
+		`url "` + release + `demo_1.2.3_linux_amd64.tar.gz"`,
+		`sha256 "` + fmt.Sprintf("%064x", 3) + `"`,
+	}
+	testcases := []struct {
+		name      string
+		checksums string // the checksums of v1.2.3 when empty, no file when noChecksums
+		distDir   string // directory below the working directory that holds the checksums; dist when empty
+		args      []string
+		wantCode  int
+		stderrHas string
+		wantPath  string   // file written, relative to the working directory; nothing is written when empty
+		wantHas   []string // substrings of the file
+	}{
+		{name: "renders into dist/packages by default", args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantPath: "dist/packages/homebrew/demo.rb", wantHas: wantFormula},
+		{name: "reads checksums from --dist and writes to --out", distDir: "alt", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--dist", "{dist}", "--out", "{work}/custom"}, wantPath: "custom/homebrew/demo.rb", wantHas: wantFormula},
+		{name: "base url replaces the release URL", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--base-url", "http://127.0.0.1:8080/"}, wantPath: "dist/packages/homebrew/demo.rb", wantHas: []string{`url "http://127.0.0.1:8080/demo_1.2.3_darwin_arm64.tar.gz"`}},
+		{name: "missing checksums file", checksums: noChecksums, args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "checksums.txt"},
+		{name: "archive missing from the checksums", checksums: testutil.ChecksumsWithout(testutil.Checksums("v1.2.3"), "linux_arm64"), args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "no checksum listed for demo_1.2.3_linux_arm64.tar.gz"},
+		{name: "rc tag", args: []string{"package", "homebrew", "--tag", "v1.2.3-rc.1"}, wantCode: 2, stderrHas: "Homebrew carries stable releases only"},
+		{name: "missing tag", args: []string{"package", "homebrew"}, wantCode: 2, stderrHas: "--tag is required"},
+		{name: "unknown channel", args: []string{"package", "bogus", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: `unknown channel "bogus"`},
+		{name: "missing channel", args: []string{"package", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "missing required argument <channel>"},
+		{name: "missing manifest", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--manifest", "nonexistent.json"}, wantCode: 2, stderrHas: "nonexistent.json"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			t.Chdir(work)
+			manifestDir := testutil.WriteManifest(t, testutil.Manifest)
+			dist := filepath.Join(work, cmp.Or(tc.distDir, "dist"))
+			if err := os.MkdirAll(dist, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.checksums != noChecksums {
+				if err := os.WriteFile(filepath.Join(dist, "checksums.txt"), []byte(cmp.Or(tc.checksums, testutil.Checksums("v1.2.3"))), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--manifest", filepath.Join(manifestDir, "spine.json")}
+			for _, a := range tc.args {
+				args = append(args, strings.NewReplacer("{dist}", dist, "{work}", work).Replace(a))
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := devcmd.Run(args, &stdout, &stderr)
+
+			if code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tc.wantCode, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tc.stderrHas) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tc.stderrHas)
+			}
+			if tc.wantPath == "" {
+				for _, dir := range []string{"dist/packages", "custom"} {
+					if _, err := os.Stat(filepath.Join(work, dir)); !os.IsNotExist(err) {
+						t.Errorf("%s exists after a failed run (stat err %v)", dir, err)
+					}
+				}
+				return
+			}
+			got, err := os.ReadFile(filepath.Join(work, tc.wantPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.wantHas {
+				if !strings.Contains(string(got), want) {
+					t.Errorf("%s does not contain %q", tc.wantPath, want)
+				}
+			}
+			for _, word := range []string{"canary", "m10rten"} {
+				if strings.Contains(strings.ToLower(string(got)), word) {
+					t.Errorf("%s contains %q", tc.wantPath, word)
+				}
+			}
+		})
+	}
 }

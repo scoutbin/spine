@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/scoutbin/spine/cli"
@@ -31,7 +33,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root := &cli.Root{
 		Command:  cli.Command{Name: "spine", Summary: "Development tool for projects built on spine"},
 		Globals:  []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
-		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand()},
+		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand()},
 	}
 	return root.Execute(args, nil, stdout, stderr)
 }
@@ -127,9 +129,60 @@ func genCommand() *cli.Command {
 	}
 }
 
+// packagers renders the package of each channel that has a release-time package.
+var packagers = map[string]func(manifest.Tool, render.Release) ([]render.File, error){
+	"homebrew": render.Homebrew,
+}
+
+func packageCommand() *cli.Command {
+	channels := strings.Join(slices.Sorted(maps.Keys(packagers)), ", ")
+	return &cli.Command{
+		Name:    "package",
+		Summary: "Render the package of a channel for a release into <out>/<channel>/",
+		Args:    []cli.Arg{{Name: "channel", Required: true, Help: "Channel to render: " + channels}},
+		Flags: []cli.Flag{
+			{Name: "tag", Kind: cli.KindString, Help: "Release tag such as v1.2.3"},
+			{Name: "dist", Kind: cli.KindString, Default: "dist", Help: "Directory holding the checksums.txt written by dist"},
+			{Name: "out", Kind: cli.KindString, Default: "dist/packages", Help: "Directory to write the package directory to"},
+			{Name: "base-url", Kind: cli.KindString, Help: "Download the release assets from this URL instead of GitHub (tests only)"},
+		},
+		Run: func(ctx *cli.Context) error {
+			channel := ctx.Arg("channel")
+			renderPackage, ok := packagers[channel]
+			if !ok {
+				return fmt.Errorf("unknown channel %q: want one of %s", channel, channels)
+			}
+			if ctx.String("tag") == "" {
+				return errors.New("--tag is required")
+			}
+			tool, err := loadTool(ctx)
+			if err != nil {
+				return err
+			}
+			checksums, err := os.ReadFile(filepath.Join(ctx.String("dist"), manifest.ChecksumsFile))
+			if err != nil {
+				return err
+			}
+			files, err := renderPackage(tool, render.Release{
+				Tag:       ctx.String("tag"),
+				Checksums: checksums,
+				BaseURL:   ctx.String("base-url"),
+				Generator: spineVersion(),
+			})
+			if err != nil {
+				return err
+			}
+			return writeFiles(filepath.Join(ctx.String("out"), channel), files)
+		},
+	}
+}
+
 func writeFiles(dir string, files []render.File) error {
 	for _, f := range files {
 		path := filepath.Join(dir, f.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
 		if err := os.WriteFile(path, f.Content, f.Mode); err != nil {
 			return err
 		}

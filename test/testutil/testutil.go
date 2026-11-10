@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/scoutbin/spine"
@@ -43,6 +45,28 @@ func WriteManifest(t *testing.T, content string) string {
 
 func Tool() spine.Tool {
 	return spine.MustLoad([]byte(Manifest))
+}
+
+// Checksums returns the contents of a checksums.txt that lists the archives of
+// tag for every target of the fixture Tool, each with its own digest.
+func Checksums(tag string) string {
+	tool := Tool()
+	var b strings.Builder
+	for i, target := range tool.Targets() {
+		fmt.Fprintf(&b, "%064x  %s\n", i+1, tool.ArchiveName(tag, target.GOOS, target.GOARCH))
+	}
+	return b.String()
+}
+
+// ChecksumsWithout returns checksums without the lines that mention archive.
+func ChecksumsWithout(checksums, archive string) string {
+	var kept []string
+	for _, line := range strings.SplitAfter(checksums, "\n") {
+		if !strings.Contains(line, archive) {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "")
 }
 
 type TarEntry struct {

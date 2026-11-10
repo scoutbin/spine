@@ -1,5 +1,5 @@
 // Package render generates the files a tool commits to its repository from its
-// manifest.
+// manifest, and the packages rendered for a release.
 package render
 
 import (
@@ -40,6 +40,7 @@ type data struct {
 var funcs = template.FuncMap{
 	"comment":    comment,
 	"yaml":       yaml,
+	"ruby":       ruby,
 	"join":       strings.Join,
 	"trimPrefix": strings.TrimPrefix,
 }
@@ -90,7 +91,7 @@ func Disabled(t manifest.Tool) []string {
 
 // execute uses {% %} delimiters because the shell sources contain ${ directly
 // next to the places a value is inserted.
-func execute(name string, d data) ([]byte, error) {
+func execute(name string, d any) ([]byte, error) {
 	tmpl, err := template.New(name).Delims("{%", "%}").Funcs(funcs).ParseFS(templates, "templates/"+name)
 	if err != nil {
 		return nil, err
@@ -148,4 +149,25 @@ func yaml(s string) (string, error) {
 		}
 	}
 	return out.String(), nil
+}
+
+// ruby renders s as a double-quoted Ruby string literal. Quotes, backslashes
+// and the "#{", "#$" and "#@" interpolation openers are escaped, and so is
+// every character that is not printable, including line breaks.
+func ruby(s string) string {
+	var out strings.Builder
+	out.WriteByte('"')
+	for i, r := range s {
+		switch {
+		case r == '"' || r == '\\' || (r == '#' && i+1 < len(s) && strings.IndexByte("{$@", s[i+1]) >= 0):
+			out.WriteByte('\\')
+			out.WriteRune(r)
+		case unicode.IsPrint(r):
+			out.WriteRune(r)
+		default:
+			fmt.Fprintf(&out, `\u{%x}`, r)
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
 }
