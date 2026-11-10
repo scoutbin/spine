@@ -2,7 +2,12 @@ package devcmd_test
 
 import (
 	"bytes"
+	"io"
+	"maps"
+	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -120,4 +125,95 @@ func TestDistRejections(t *testing.T) {
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) { run(t, tc) })
 	}
+}
+
+func TestGen(t *testing.T) {
+	snapshot := func(t *testing.T, dir string) map[string]string {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		for _, e := range entries {
+			content, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := e.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[e.Name()] = info.Mode().Perm().String() + " " + string(content)
+		}
+		return files
+	}
+	testcases := []struct {
+		name      string
+		generated bool              // run gen before the case
+		edits     map[string]string // files rewritten before the case
+		chmod     map[string]os.FileMode
+		args      []string
+		wantCode  int
+		stderrHas string
+		wantFresh bool // files match a fresh gen afterwards; otherwise the directory is untouched
+	}{
+		{name: "writes the files", args: []string{"gen"}, wantFresh: true},
+		{name: "overwrites a drifted file", generated: true, edits: map[string]string{"install.sh": "edited\n"}, args: []string{"gen"}, wantFresh: true},
+		{name: "check passes on fresh files", generated: true, args: []string{"gen", "--check"}, wantFresh: true},
+		{name: "check fails on a drifted file", generated: true, edits: map[string]string{"install.sh": "edited\n"}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh;"},
+		{name: "check fails on a file that lost its executable bit", generated: true, chmod: map[string]os.FileMode{"install.sh": 0o644}, args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh;"},
+		{name: "overwrites the mode of an unchanged file", generated: true, chmod: map[string]os.FileMode{"install.sh": 0o644}, args: []string{"gen"}, wantFresh: true},
+		{name: "check fails on missing files and writes nothing", args: []string{"gen", "--check"}, wantCode: 2, stderrHas: "out of date: install.sh, install.ps1;"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.chmod) > 0 && runtime.GOOS == "windows" {
+				t.Skip("windows has no executable bit")
+			}
+			manifest := testutil.WriteManifest(t, testutil.Manifest)
+			dir, fresh := t.TempDir(), t.TempDir()
+			withTarget := func(args []string, out string) []string {
+				return slices.Concat(args, []string{"--manifest", filepath.Join(manifest, "spine.json"), "--out", out})
+			}
+			if devcmd.Run(withTarget([]string{"gen"}, fresh), io.Discard, io.Discard) != 0 {
+				t.Fatal("reference gen failed")
+			}
+			if tc.generated && devcmd.Run(withTarget([]string{"gen"}, dir), io.Discard, io.Discard) != 0 {
+				t.Fatal("initial gen failed")
+			}
+			for name, content := range tc.edits {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, mode := range tc.chmod {
+				if err := os.Chmod(filepath.Join(dir, name), mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := snapshot(t, dir)
+
+			var stderr bytes.Buffer
+			code := devcmd.Run(withTarget(tc.args, dir), io.Discard, &stderr)
+
+			if code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tc.wantCode, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tc.stderrHas) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tc.stderrHas)
+			}
+			want := before
+			if tc.wantFresh {
+				want = snapshot(t, fresh)
+			}
+			if got := snapshot(t, dir); !maps.Equal(got, want) {
+				t.Errorf("files in %s = %v, want %v", dir, keys(got), keys(want))
+			}
+		})
+	}
+}
+
+func keys(m map[string]string) []string {
+	return slices.Sorted(maps.Keys(m))
 }

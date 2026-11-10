@@ -4,15 +4,20 @@
 package devcmd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/scoutbin/spine/cli"
 	"github.com/scoutbin/spine/internal/dist"
 	"github.com/scoutbin/spine/internal/manifest"
 	"github.com/scoutbin/spine/internal/release"
+	"github.com/scoutbin/spine/internal/render"
 )
 
 // Contract is the version of the dev CLI outputs and the spine.json schema that
@@ -25,7 +30,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root := &cli.Root{
 		Command:  cli.Command{Name: "spine", Summary: "Development tool for projects built on spine"},
 		Globals:  []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
-		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand()},
+		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand()},
 	}
 	return root.Execute(args, nil, stdout, stderr)
 }
@@ -94,6 +99,90 @@ func distCommand() *cli.Command {
 			})
 		},
 	}
+}
+
+func genCommand() *cli.Command {
+	return &cli.Command{
+		Name:    "gen",
+		Summary: "Write the generated files of the tool: install.sh and install.ps1",
+		Flags: []cli.Flag{
+			{Name: "check", Kind: cli.KindBool, Help: "Fail if a file differs from what would be generated, and write nothing"},
+			{Name: "out", Kind: cli.KindString, Default: ".", Help: "Repository root to write the files to"},
+		},
+		Run: func(ctx *cli.Context) error {
+			tool, err := loadTool(ctx)
+			if err != nil {
+				return err
+			}
+			files, err := render.Files(tool, spineVersion())
+			if err != nil {
+				return err
+			}
+			if ctx.Bool("check") {
+				return checkFiles(ctx.String("out"), files)
+			}
+			return writeFiles(ctx.String("out"), files)
+		},
+	}
+}
+
+func writeFiles(dir string, files []render.File) error {
+	for _, f := range files {
+		path := filepath.Join(dir, f.Path)
+		if err := os.WriteFile(path, f.Content, f.Mode); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, f.Mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkFiles(dir string, files []render.File) error {
+	var stale []string
+	for _, f := range files {
+		path := filepath.Join(dir, f.Path)
+		current, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err != nil || !bytes.Equal(current, f.Content) {
+			stale = append(stale, f.Path)
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if runtime.GOOS != "windows" && info.Mode()&0o111 != f.Mode&0o111 {
+			stale = append(stale, f.Path)
+		}
+	}
+	if len(stale) > 0 {
+		return fmt.Errorf("out of date: %s; run go tool spine gen", strings.Join(stale, ", "))
+	}
+	return nil
+}
+
+// spineVersion is the version of the spine module this binary was built from,
+// or "devel" for a build that is not from a released version.
+func spineVersion() string {
+	const module = "github.com/scoutbin/spine"
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "devel"
+	}
+	m := info.Main
+	for _, dep := range info.Deps {
+		if dep.Path == module {
+			m = *dep
+		}
+	}
+	if m.Path != module || m.Version == "" || m.Version == "(devel)" {
+		return "devel"
+	}
+	return m.Version
 }
 
 func loadTool(ctx *cli.Context) (manifest.Tool, error) {
