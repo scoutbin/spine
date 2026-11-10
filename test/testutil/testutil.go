@@ -64,3 +64,7 @@ func TarGz(t *testing.T, entries ...TarEntry) []byte {
 	}
 	return buf.Bytes()
 }
+
+func EnvOf(vars map[string]string) func(string) (string, bool) {
+	return func(k string) (string, bool) { v, ok := vars[k]; return v, ok }
+}
