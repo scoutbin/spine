@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/scoutbin/spine"
@@ -21,6 +23,23 @@ const Manifest = `{
     "action": true
   }
 }`
+
+const MinimalManifest = `{
+  "name": "demo",
+  "repo": "scoutbin/demo",
+  "summary": "Demonstrate the spine",
+  "license": "Apache-2.0"
+}`
+
+// WriteManifest writes content as spine.json in a new temp dir and returns the dir.
+func WriteManifest(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "spine.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 func Tool() spine.Tool {
 	return spine.MustLoad([]byte(Manifest))
