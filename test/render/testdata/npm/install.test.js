@@ -132,7 +132,7 @@ test("fixCommand quotes the install script path for the platform", () => {
     {
       platform: "linux",
       dir: "/opt/it's",
-      want: `node '/opt/it'\\''s${path.sep}install.js'`,
+      want: `node '${path.join("/opt", "it")}'\\''s${path.sep}install.js'`,
     },
     {
       platform: "win32",

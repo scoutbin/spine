@@ -124,7 +124,7 @@ func TestHomebrewFreeTextEscaping(t *testing.T) {
 			}
 			rubySyntaxCheck(t, formula)
 
-			cmd := exec.Command(requireRuby(t), "-e", "def desc(s); print s; end; eval(ARGV[0])", strings.TrimSpace(line))
+			cmd := exec.Command(requireRuby(t), "-e", "$stdout.binmode; def desc(s); print s; end; eval(ARGV[0])", strings.TrimSpace(line))
 			cmd.Dir = t.TempDir()
 			out, err := cmd.Output()
 			if want := strings.ToValidUTF8(tc.value, "\uFFFD"); err != nil || string(out) != want {

@@ -424,6 +424,6 @@ jobs:
             echo "The dist-tags are up to date."
             exit 0
           fi
-          while IFS== read -r dist_tag target; do
+          while IFS='=' read -r dist_tag target; do
             npm dist-tag add "$name@$target" "$dist_tag" </dev/null
           done <<<"$changes"

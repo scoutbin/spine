@@ -860,7 +860,9 @@ jobs:
           cp dist/* mirror/
           url=$(node -p "require('node:url').pathToFileURL(require('node:path').resolve('mirror')).href")
           echo "EXAMPLE_DOWNLOAD_BASE_URL=$url" >> "$GITHUB_ENV"
-          echo "TARBALL=./npm-tarball/scoutbin-example-${CI_TAG#v}.tgz" >> "$GITHUB_ENV"
+          # Absolute, because pnpm 10 resolves a relative path in add -g against its global directory.
+          tarball=$(node -p "require('node:path').resolve(process.argv[1])" "npm-tarball/scoutbin-example-${CI_TAG#v}.tgz")
+          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
           npm install -g "pnpm@$PNPM_VERSION"
           pnpm --version
       - name: pnpm skips the install script, the printed fix repairs it
@@ -893,8 +895,10 @@ jobs:
             *) fail "info --json did not report channel npm" ;;
           esac
       # Runs on pnpm 12 only: approve-builds -g --all runs the script of the global install.
+      # Not on Windows, where pnpm 12 approve-builds -g finds no pending builds: it compares a
+      # \\?\-prefixed install dir against a plain global dir, so no global package counts as its own.
       - name: pnpm approve-builds runs the install script
-        if: matrix.pnpm == '12'
+        if: matrix.pnpm == '12' && runner.os != 'Windows'
         run: |
           fail() { echo "::error::$*"; exit 1; }
           export PNPM_HOME="$RUNNER_TEMP/pnpm-approve"
@@ -991,3 +995,5 @@ jobs:
           Write-Host $out
           if ($LASTEXITCODE -eq 0) { throw 'install.ps1 accepted an unknown track' }
           if ($out -notmatch 'EXAMPLE_TRACK must be one of stable, alpha, beta or rc') { throw 'unexpected error message' }
+          # The runner appends `exit $LASTEXITCODE`, which would fail the step on the expected non-zero exit above.
+          exit 0
