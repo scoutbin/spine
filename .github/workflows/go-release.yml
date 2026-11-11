@@ -1,0 +1,429 @@
+name: Go release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing release tag to build, such as v1.2.3 or v1.2.3-rc.1
+        required: true
+        type: string
+      publish:
+        description: Publish the release and its channels. When false, build and dry-run the packaging only
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      homebrew-tap-deploy-key:
+        description: Private SSH key with write access to the Homebrew tap. Required when the homebrew channel publishes
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  SPINE_CONTRACT: "1"
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.manifest.outputs.name }}
+      homebrew: ${{ steps.manifest.outputs.homebrew }}
+      homebrew_tap: ${{ steps.manifest.outputs.homebrew_tap }}
+      npm: ${{ steps.manifest.outputs.npm }}
+      track: ${{ steps.classify.outputs.track }}
+      prerelease: ${{ steps.classify.outputs.prerelease }}
+      dist_tag: ${{ steps.classify.outputs.dist_tag }}
+      commit: ${{ steps.classify.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Read the manifest and assert the spine contract
+        id: manifest
+        run: |
+          set -eu
+          manifest=$(go tool spine manifest)
+          contract=$(printf '%s\n' "$manifest" | sed -n 's/^contract=//p')
+          if [ "$contract" != "$SPINE_CONTRACT" ]; then
+            echo "::error::spine contract is '$contract', this workflow expects '$SPINE_CONTRACT': bump the spine workflow ref and go.mod together"
+            exit 1
+          fi
+          printf '%s\n' "$manifest" >> "$GITHUB_OUTPUT"
+      - name: Classify the tag
+        id: classify
+        run: |
+          set -eu
+          classified=$(go tool spine classify "$TAG") || {
+            echo "::error::Tag '$TAG' is not a release tag."
+            exit 1
+          }
+          {
+            printf '%s\n' "$classified"
+            echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Require the Homebrew tap deploy key
+        if: ${{ inputs.publish && steps.manifest.outputs.homebrew == 'true' && steps.classify.outputs.track == 'stable' }}
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.homebrew-tap-deploy-key }}
+        run: |
+          [ -n "$TAP_DEPLOY_KEY" ] || { echo "::error::The homebrew-tap-deploy-key secret is not set"; exit 1; }
+      - name: Refuse an already published release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          published=$(gh api --paginate "repos/$GH_REPO/releases" |
+            jq -s --arg tag "$TAG" '[.[][] | select(.tag_name == $tag and .draft == false)] | length')
+          if [ "$published" -gt 0 ]; then
+            echo "::error::Release $TAG is already published. \"Re-run all jobs\" would rebuild different bytes. Use \"Re-run failed jobs\" on the original run to recover."
+            exit 1
+          fi
+
+  build:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - run: go tool spine dist --version "$TAG"
+      - name: Verify checksums
+        working-directory: dist
+        run: |
+          sha256sum -c checksums.txt
+          # One archive per release target (3 OS x 2 arch) plus checksums.txt.
+          test "$(wc -l < checksums.txt)" -eq 6
+          test "$(ls -1 | wc -l)" -eq 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+      # Homebrew carries stable releases only and rejects every other track.
+      - name: Dry-run the Homebrew package
+        if: ${{ needs.resolve.outputs.homebrew == 'true' && needs.resolve.outputs.track == 'stable' }}
+        env:
+          NAME: ${{ needs.resolve.outputs.name }}
+        run: |
+          set -eu
+          go tool spine package homebrew --tag "$TAG" --out "$RUNNER_TEMP/packages"
+          ruby -c "$RUNNER_TEMP/packages/homebrew/$NAME.rb"
+      - name: Dry-run the npm package
+        if: ${{ needs.resolve.outputs.npm == 'true' }}
+        run: go tool spine package npm --tag "$TAG" --out "$RUNNER_TEMP/packages"
+
+  attest:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+
+  release:
+    needs: [resolve, attest]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+      COMMIT: ${{ needs.resolve.outputs.commit }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Create or complete the release
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+
+          (cd dist && sha256sum -c checksums.txt)
+
+          fail() { echo "::error::$1"; exit 1; }
+          in_list() {
+            local item
+            for item in "${@:2}"; do
+              [ "$item" = "$1" ] && return 0
+            done
+            return 1
+          }
+          uploaded() {
+            gh release view "$TAG" --json assets \
+              --jq '.assets[] | select(.state == "uploaded") | .name' | sort
+          }
+
+          expected_names=$({ awk '{print $2}' dist/checksums.txt; echo checksums.txt; } | sort)
+          [ "$(ls -1 dist | sort)" = "$expected_names" ] ||
+            fail "Files in dist/ differ from the archives listed in checksums.txt plus checksums.txt itself"
+          mapfile -t expected <<<"$expected_names"
+
+          case "$PRERELEASE" in
+            true) release_flags=(--prerelease --latest=false) ;;
+            false) release_flags=(--prerelease=false --latest) ;;
+            *) fail "Unknown prerelease value '$PRERELEASE' for $TAG" ;;
+          esac
+
+          tagged=$(gh api "repos/$GH_REPO/commits/refs/tags/$TAG" --jq .sha)
+          [ "$tagged" = "$COMMIT" ] ||
+            fail "Tag $TAG points at $tagged, not the built commit $COMMIT. The tag moved after the build."
+
+          matches=$(gh api --paginate "repos/$GH_REPO/releases" |
+            jq -s --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]')
+          case "$(jq length <<<"$matches")" in
+            0)
+              gh release create "$TAG" --draft --generate-notes --verify-tag "${release_flags[@]}"
+              is_draft=true
+              ;;
+            1)
+              is_draft=$(jq -r '.[0].draft' <<<"$matches")
+              ;;
+            *)
+              fail "More than one release exists for $TAG"
+              ;;
+          esac
+
+          if [ "$is_draft" = true ]; then
+            # Drop half-uploaded assets left by a failed run so they are uploaded again.
+            stale_names=$(gh release view "$TAG" --json assets \
+              --jq '.assets[] | select(.state != "uploaded") | .name')
+            if [ -n "$stale_names" ]; then
+              while read -r name; do
+                gh release delete-asset "$TAG" "$name" --yes
+              done <<<"$stale_names"
+            fi
+          fi
+
+          present_names=$(uploaded)
+          present=()
+          [ -z "$present_names" ] || mapfile -t present <<<"$present_names"
+          mkdir existing
+          for name in "${present[@]}"; do
+            in_list "$name" "${expected[@]}" || fail "Release $TAG has unexpected asset $name"
+            gh release download "$TAG" --pattern "$name" --dir existing
+            if ! cmp -s "dist/$name" "existing/$name"; then
+              sha256sum "dist/$name" "existing/$name"
+              if [ "$is_draft" = true ]; then
+                hint="The draft is stale. Delete the draft release and re-run."
+              else
+                hint="Use \"Re-run failed jobs\" on the original run."
+              fi
+              fail "Asset $name on release $TAG differs from this build. \"Re-run all jobs\" rebuilds different bytes. $hint Refusing to overwrite it."
+            fi
+          done
+
+          missing=()
+          for name in "${expected[@]}"; do
+            in_list "$name" "${present[@]}" || missing+=("dist/$name")
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            [ "$is_draft" = true ] || fail "Published release $TAG is missing ${#missing[@]} asset(s). Refusing to modify a published release."
+            gh release upload "$TAG" "${missing[@]}"
+          fi
+
+          [ "$(uploaded)" = "$(printf '%s\n' "${expected[@]}")" ] ||
+            fail "Release $TAG does not hold exactly the expected assets"
+
+          if [ "$is_draft" = true ]; then
+            gh release edit "$TAG" --draft=false "${release_flags[@]}"
+          fi
+          [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false ] ||
+            fail "Release $TAG is still a draft"
+          [ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" = "$PRERELEASE" ] ||
+            fail "Release $TAG does not have the prerelease flag $PRERELEASE"
+          echo "Release $TAG is published with all ${#expected[@]} assets."
+
+  homebrew:
+    needs: [resolve, release]
+    if: ${{ inputs.publish && needs.resolve.outputs.homebrew == 'true' && needs.resolve.outputs.track == 'stable' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Render the formula
+        run: go tool spine package homebrew --tag "$TAG"
+      # A shared tap takes pushes from every tool, so a rejected push is retried after a rebase.
+      - name: Push the formula to the tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_DEPLOY_KEY: ${{ secrets.homebrew-tap-deploy-key }}
+          TAP: ${{ needs.resolve.outputs.homebrew_tap }}
+          NAME: ${{ needs.resolve.outputs.name }}
+        run: |
+          set -euo pipefail
+          formula="$NAME.rb"
+          rendered="dist/packages/homebrew/$formula"
+          ruby -c "$rendered"
+          version=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$rendered")
+          [ -n "$version" ] || { echo "::error::$rendered has no version line"; exit 1; }
+
+          umask 077
+          key="$RUNNER_TEMP/tap_deploy_key"
+          trap 'rm -f "$key"' EXIT
+          known_hosts="$RUNNER_TEMP/known_hosts"
+          printf '%s\n' "$TAP_DEPLOY_KEY" | tr -d '\r' > "$key"
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+
+          git clone --branch main "git@github.com:$TAP.git" tap
+          if grep -qx "  version \"$version\"" "tap/Formula/$formula" 2>/dev/null; then
+            echo "The tap already has $NAME $version. Nothing to push."
+            exit 0
+          fi
+
+          mkdir -p tap/Formula
+          cp "$rendered" "tap/Formula/$formula"
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C tap add "Formula/$formula"
+          git -C tap commit -m "$NAME $version"
+          for attempt in 1 2 3 4 5; do
+            git -C tap push origin HEAD:refs/heads/main && exit 0
+            echo "The push was rejected (attempt $attempt). Rebasing onto the tap."
+            sleep $((attempt * 2))
+            git -C tap pull --rebase origin main
+          done
+          echo "::error::Could not push $NAME $version to $TAP."
+          exit 1
+
+  # npm trusted publishing (OIDC) replaces a stored token, so id-token: write is
+  # granted to this job only. The package installs from the release archives, which
+  # the release job has made public.
+  npm:
+    needs: [resolve, release]
+    if: ${{ inputs.publish && needs.resolve.outputs.npm == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DIST_TAG: ${{ needs.resolve.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      # npm is pinned to a version that supports trusted publishing and `npm dist-tag` over OIDC,
+      # so publishing does not depend on the npm bundled with Node.
+      - name: Install npm
+        env:
+          NPM_VERSION: "11.21.1"
+        run: |
+          set -eu
+          npm install -g "npm@$NPM_VERSION"
+          node --version
+          npm --version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Render the package
+        run: go tool spine package npm --tag "$TAG"
+      - name: Publish unless this version is already on npm
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          name=$(node -p "require('./dist/packages/npm/package.json').name")
+          version=$(node -p "require('./dist/packages/npm/package.json').version")
+          err=$(mktemp)
+          if found=$(npm view "$name@$version" version 2>"$err"); then
+            [ "$found" = "$version" ] || fail "npm view $name@$version printed '$found'."
+            echo "$name@$version is already on npm. Nothing to publish."
+          else
+            grep -q 'npm error code E404' "$err" || {
+              cat "$err" >&2
+              fail "Could not look up $name@$version on npm."
+            }
+            npm publish ./dist/packages/npm --tag "$DIST_TAG"
+          fi
+      - name: Reconcile dist-tags
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          name=$(node -p "require('./dist/packages/npm/package.json').name")
+          version=$(node -p "require('./dist/packages/npm/package.json').version")
+
+          # The registry can serve a cached package page for a moment after a publish.
+          seen=false
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if versions=$(npm view "$name" versions --json 2>/dev/null) &&
+              jq -e --arg version "$version" '[.] | flatten | any(. == $version)' <<<"$versions" >/dev/null; then
+              seen=true
+              break
+            fi
+            echo "$name@$version is not in the published versions yet (attempt $attempt)."
+            sleep 6
+          done
+          [ "$seen" = true ] || fail "$name@$version did not show up in the versions on npm."
+
+          dist_tags=$(npm view "$name" dist-tags --json) || fail "Could not read the dist-tags of $name."
+          changes=$(go tool spine dist-tags "$TAG" --versions "$versions" --dist-tags "$dist_tags") ||
+            fail "Could not work out the dist-tag changes."
+          if [ -z "$changes" ]; then
+            echo "The dist-tags are up to date."
+            exit 0
+          fi
+          while IFS== read -r dist_tag target; do
+            npm dist-tag add "$name@$target" "$dist_tag" </dev/null
+          done <<<"$changes"
