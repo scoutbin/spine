@@ -124,6 +124,36 @@ func TestHighestInPath(t *testing.T) {
 	}
 }
 
+func TestPreviousTag(t *testing.T) {
+	testcases := []struct {
+		name string
+		tag  string
+		tags []string
+		want string
+	}{
+		{"no tags", "v1.0.0", nil, ""},
+		{"stable after stable", "v1.2.0", []string{"v1.0.0", "v1.1.0", "v1.1.1"}, "v1.1.1"},
+		{"stable skips prereleases", "v1.2.0", []string{"v1.1.0", "v1.2.0-alpha.1", "v1.2.0-beta.1", "v1.2.0-rc.2"}, "v1.1.0"},
+		{"stable with only prereleases below", "v1.2.0", []string{"v1.2.0-rc.1"}, ""},
+		{"rc after rc", "v1.3.0-rc.2", []string{"v1.2.0", "v1.3.0-alpha.1", "v1.3.0-beta.1", "v1.3.0-rc.1"}, "v1.3.0-rc.1"},
+		{"first prerelease after a stable", "v1.3.0-alpha.1", []string{"v1.1.0", "v1.2.0"}, "v1.2.0"},
+		{"invalid and nightly tags are ignored", "v1.3.0-rc.1", []string{"v1.2.0", "v1.3.0-nightly.1", "v1.3.0-rc.0", "v1.3.0-ci", "v1.2.5+build", "1.2.9", "latest"}, "v1.2.0"},
+		{"higher tags are ignored", "v1.2.4", []string{"v1.2.3", "v1.3.0", "v1.3.0-rc.1", "v2.0.0"}, "v1.2.3"},
+		{"higher prereleases are ignored for a prerelease", "v1.2.4-rc.1", []string{"v1.2.3", "v1.2.4-rc.2", "v1.3.0-alpha.1"}, "v1.2.3"},
+		{"the tag itself is ignored", "v1.2.0", []string{"v1.2.0", "v1.1.0"}, "v1.1.0"},
+		{"only the tag itself", "v1.2.0", []string{"v1.2.0"}, ""},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := release.PreviousTag(tc.tag, tc.tags)
+			if got != tc.want || ok != (tc.want != "") {
+				t.Errorf("PreviousTag(%q, %v) = %q, %v, want %q", tc.tag, tc.tags, got, ok, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidatePushedTag(t *testing.T) {
 	testcases := []struct {
 		tag     string

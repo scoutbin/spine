@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 env:
-  SPINE_CONTRACT: "1"
+  SPINE_CONTRACT: "2"
   TAG: ${{ inputs.tag }}
 
 jobs:
@@ -39,6 +39,7 @@ jobs:
       prerelease: ${{ steps.classify.outputs.prerelease }}
       dist_tag: ${{ steps.classify.outputs.dist_tag }}
       commit: ${{ steps.classify.outputs.commit }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,6 +71,25 @@ jobs:
           {
             printf '%s\n' "$classified"
             echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Read the release notes from CHANGELOG.md
+        id: notes
+        run: |
+          set -eu
+          notes=$(go tool spine notes "$TAG") || {
+            echo "::error::CHANGELOG.md has no section for '$TAG'. Run 'go tool spine changelog $TAG', edit the section and commit it before tagging."
+            exit 1
+          }
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            echo "::error::The CHANGELOG.md section for '$TAG' is empty."
+            exit 1
+          fi
+          printf '%s\n' "$notes"
+          delimiter="notes_$(openssl rand -hex 16)"
+          {
+            echo "notes<<$delimiter"
+            printf '%s\n' "$notes"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
       - name: Require the Homebrew tap deploy key
         if: ${{ inputs.publish && steps.manifest.outputs.homebrew == 'true' && steps.classify.outputs.track == 'stable' }}
@@ -167,6 +187,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
       COMMIT: ${{ needs.resolve.outputs.commit }}
+      NOTES: ${{ needs.resolve.outputs.notes }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -212,7 +233,9 @@ jobs:
             jq -s --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]')
           case "$(jq length <<<"$matches")" in
             0)
-              gh release create "$TAG" --draft --generate-notes --verify-tag "${release_flags[@]}"
+              notes_file="$RUNNER_TEMP/notes.md"
+              printf '%s\n' "$NOTES" > "$notes_file"
+              gh release create "$TAG" --draft --notes-file "$notes_file" --verify-tag "${release_flags[@]}"
               is_draft=true
               ;;
             1)

@@ -1,6 +1,7 @@
 // Package devcmd implements the handlers of the spine dev CLI, which tools run
-// as "go tool spine". Results go to stdout as key=value lines, errors go to
-// stderr with exit code 2.
+// as "go tool spine". Results go to stdout as key=value lines, except for notes,
+// which prints the raw text of a changelog section. Errors go to stderr with
+// exit code 2.
 package devcmd
 
 import (
@@ -16,8 +17,10 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/scoutbin/spine/cli"
+	"github.com/scoutbin/spine/internal/changelog"
 	"github.com/scoutbin/spine/internal/dist"
 	"github.com/scoutbin/spine/internal/manifest"
 	"github.com/scoutbin/spine/internal/release"
@@ -27,14 +30,16 @@ import (
 // Contract is the version of the dev CLI outputs and the spine.json schema that
 // the reusable workflows depend on. Raise it on any incompatible change to
 // either; each workflow hardcodes the value it expects.
-const Contract = 1
+const Contract = 2
+
+const changelogFile = "CHANGELOG.md"
 
 // Run executes args (without the program name) and returns the exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	root := &cli.Root{
 		Command:  cli.Command{Name: "spine", Summary: "Development tool for projects built on spine"},
 		Globals:  []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
-		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand(), distTagsCommand(stdout)},
+		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand(), distTagsCommand(stdout), changelogCommand(stdout), notesCommand(stdout)},
 	}
 	return root.Execute(args, nil, stdout, stderr)
 }
@@ -212,6 +217,71 @@ func distTagsCommand(stdout io.Writer) *cli.Command {
 				kv = append(kv, c.Tag, c.Version)
 			}
 			return printPairs(stdout, kv...)
+		},
+	}
+}
+
+func changelogCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:    "changelog",
+		Summary: "Add a section for a release tag to CHANGELOG.md from the commits since the previous release, and print the base and commit count as key=value lines",
+		Args:    []cli.Arg{{Name: "tag", Required: true, Help: "Release tag such as v1.2.3 or v1.2.3-rc.1"}},
+		Run: func(ctx *cli.Context) error {
+			tag := ctx.Arg("tag")
+			if _, err := release.ValidatePushedTag(tag); err != nil {
+				return err
+			}
+			current, err := os.ReadFile(changelogFile)
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			tags, err := changelog.MergedTags()
+			if err != nil {
+				return err
+			}
+			base, _ := release.PreviousTag(tag, tags)
+			subjects, err := changelog.Subjects(base)
+			if err != nil {
+				return err
+			}
+			if len(subjects) == 0 {
+				return fmt.Errorf("no commits to list for %s since %q", tag, base)
+			}
+			updated, err := changelog.Prepend(current, tag, time.Now().Format(time.DateOnly), subjects)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(changelogFile, updated, 0o644); err != nil {
+				return err
+			}
+			return printPairs(stdout, "base", base, "commits", fmt.Sprint(len(subjects)))
+		},
+	}
+}
+
+func notesCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:    "notes",
+		Summary: "Print the section of a release tag from CHANGELOG.md as the release notes",
+		Args:    []cli.Arg{{Name: "tag", Required: true, Help: "Release tag such as v1.2.3 or v1.2.3-rc.1"}},
+		Run: func(ctx *cli.Context) error {
+			tag := ctx.Arg("tag")
+			if _, err := release.ValidatePushedTag(tag); err != nil {
+				return err
+			}
+			content, err := os.ReadFile(changelogFile)
+			if os.IsNotExist(err) {
+				return fmt.Errorf("%s not found: run go tool spine changelog %s", changelogFile, tag)
+			}
+			if err != nil {
+				return err
+			}
+			notes, ok := changelog.Section(content, tag)
+			if !ok {
+				return fmt.Errorf("%s has no section for %s: run go tool spine changelog %s", changelogFile, tag, tag)
+			}
+			_, err = io.WriteString(stdout, notes+"\n")
+			return err
 		},
 	}
 }

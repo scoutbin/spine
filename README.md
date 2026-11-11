@@ -10,7 +10,7 @@ spine is the shared core of scoutbin's command-line tools. It has two parts: a G
 - Distribution through GitHub Releases, the installers, Homebrew (tap `scoutbin/homebrew-tap`), npm (under `@scoutbin`) and a GitHub Action. GitHub Releases and the installers are always on. Homebrew, npm and the action are enabled in `spine.json`.
 - Four release tracks: stable, alpha, beta and rc.
 
-Status: spine is pre-1.0. Tools should pin an exact spine version, because v0.x releases may break compatibility. The installers and the action download release assets without credentials, so the tool repository must be public for them to work for users.
+Status: spine is pre-1.0 and is not tagged or released. Tools should pin an exact spine commit, because any commit may break compatibility. The installers and the action download release assets without credentials, so the tool repository must be public for them to work for users.
 
 ## Repository layout
 
@@ -67,7 +67,7 @@ These values are derived from `name`, so they have no fields of their own:
 2. Require spine and register the dev CLI. This needs Go 1.24 or later.
 
    ```sh
-   go get github.com/scoutbin/spine@vX.Y.Z
+   go get github.com/scoutbin/spine@<full commit SHA>
    go get -tool github.com/scoutbin/spine/cmd/spine
    ```
 
@@ -117,7 +117,7 @@ These values are derived from `name`, so they have no fields of their own:
      ci:
        permissions:
          contents: read
-       uses: scoutbin/spine/.github/workflows/go-ci.yml@<full commit SHA> # vX.Y.Z
+       uses: scoutbin/spine/.github/workflows/go-ci.yml@<full commit SHA> # <pseudo-version>
    ```
 
    `.github/workflows/release.yml`:
@@ -144,13 +144,15 @@ These values are derived from `name`, so they have no fields of their own:
          contents: write
          id-token: write
          attestations: write
-       uses: scoutbin/spine/.github/workflows/go-release.yml@<full commit SHA> # vX.Y.Z
+       uses: scoutbin/spine/.github/workflows/go-release.yml@<full commit SHA> # <pseudo-version>
        with:
          tag: ${{ inputs.tag }}
          publish: ${{ inputs.publish }}
        secrets:
          homebrew-tap-deploy-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
    ```
+
+6. Add `CHANGELOG.md` at the repository root. `go tool spine changelog vX.Y.Z` drafts each release's section from git history, and the release workflow publishes that section as the release notes.
 
 Secrets, the switch that enables publishing, and the spine upgrade procedure are in [RELEASING.md](RELEASING.md).
 
@@ -165,10 +167,10 @@ Secrets, the switch that enables publishing, and the spine upgrade procedure are
 
 `go-release.yml` (`workflow_call`) takes the inputs `tag` (required) and `publish` (default `false`). The secret `homebrew-tap-deploy-key` is optional. It is used by the Homebrew job, which runs only for stable tags. Jobs:
 
-- `resolve`: reads the manifest and the tag. When `publish` is true, it refuses a tag that already has a published release.
+- `resolve`: reads the manifest and the tag. When `publish` is true, it refuses a tag that already has a published release. It fails when `CHANGELOG.md` has no section for the tag, on dry runs too.
 - `build`: runs the tests and builds the archives. It dry-runs the Homebrew package (stable only) and the npm package.
 - `attest`: attests the release artifacts.
-- `release`: creates a draft release, uploads the assets and publishes it. It reuses an existing release whose assets are identical, and fails on missing or differing assets.
+- `release`: creates a draft release with the tag's `CHANGELOG.md` section as its notes, uploads the assets and publishes it. Notes are set only when the release is created, so a re-run keeps the body of an existing release. It reuses an existing release whose assets are identical, and fails on missing or differing assets.
 - `homebrew`: pushes the formula to the tap over SSH, using the deploy key. It runs only when `publish` is true, Homebrew is enabled in `spine.json` and the track is stable.
 - `npm`: publishes the package with OIDC trusted publishing, then reconciles the npm dist-tags.
 

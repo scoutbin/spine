@@ -1,10 +1,11 @@
 # Releasing
 
-This covers releasing a tool that calls spine's reusable workflows, upgrading spine in a tool, and releasing spine itself. Workflow paths are relative to `.github/workflows/` in the spine repository unless noted.
+This covers releasing a tool that calls spine's reusable workflows, upgrading spine in a tool, and changing spine itself. Workflow paths are relative to `.github/workflows/` in the spine repository unless noted.
 
 ## Tool repository setup
 
 - `spine.json` at the repository root. Only the channels it enables run.
+- `CHANGELOG.md` at the repository root. `go tool spine changelog` creates it. See [Releasing a tool](#releasing-a-tool).
 - `.github/workflows/ci.yml` and `.github/workflows/release.yml`, shown below.
 - `HOMEBREW_TAP_DEPLOY_KEY` as a repository secret, if `channels.homebrew.tap` is set. It is needed only for a publish of a stable tag. Dry runs do not use it.
 - A trusted publisher on npmjs.com for the package, if `channels.npm.package` is set. See [npm](#npm).
@@ -27,7 +28,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: scoutbin/spine/.github/workflows/go-ci.yml@<full commit SHA> # vX.Y.Z
+    uses: scoutbin/spine/.github/workflows/go-ci.yml@<full commit SHA> # <pseudo-version>
 ```
 
 `release.yml`:
@@ -55,7 +56,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    uses: scoutbin/spine/.github/workflows/go-release.yml@<full commit SHA> # vX.Y.Z
+    uses: scoutbin/spine/.github/workflows/go-release.yml@<full commit SHA> # <pseudo-version>
     with:
       tag: ${{ inputs.tag }}
       publish: ${{ inputs.publish }}
@@ -78,6 +79,8 @@ Any other tag fails in the `resolve` job. That includes a missing `v`, build met
 
 The release job checks that the tag still points at the commit that was built, and fails if it has moved. Do not move or delete a release tag.
 
+Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `resolve` fails without one. If a tag was pushed without a section, do not move or delete it. Add the section on the default branch and release the next tag number.
+
 | Tag | GitHub release | npm dist-tag | Homebrew formula |
 | --- | --- | --- | --- |
 | `vX.Y.Z` | Latest | `latest` | Updated |
@@ -85,7 +88,17 @@ The release job checks that the tag still points at the commit that was built, a
 
 ## Releasing a tool
 
-1. Merge the release commit to the default branch. The release tag must point at this commit.
+1. Prepare the release commit on up-to-date main, then merge it to the default branch.
+
+   ```sh
+   git fetch --tags
+   go tool spine changelog vX.Y.Z
+   ```
+
+   The command adds a `## vX.Y.Z - YYYY-MM-DD` section at the top of `CHANGELOG.md`, with one line per non-merge commit since the previous release tag. For a stable tag, the previous tag is the previous stable. For a prerelease, it is the previous tag of any track. A first release lists every commit, so trim the list. Edit the section and commit it. If main moves before the merge, delete the section and run the command again. The command refuses to replace an existing section.
+
+   The release tag must point at this commit.
+
 2. Create the tag and push it.
 
    ```sh
@@ -101,7 +114,7 @@ The release job checks that the tag still points at the commit that was built, a
    gh workflow run release.yml -f tag=vX.Y.Z -f publish=false
    ```
 
-   The dry run reads the manifest and checks the contract. It runs `go test ./...` and builds the archives and `checksums.txt`. It checks the checksums, and checks that there are six archives plus the checksum file. For stable tags it renders the Homebrew formula and runs `ruby -c` on it. It renders the npm package. It creates no release, pushes nothing and needs no secret. It uploads the built files as a workflow artifact.
+   The dry run reads the manifest, checks the contract and checks that `CHANGELOG.md` has a section for the tag. It runs `go test ./...` and builds the archives and `checksums.txt`. It checks the checksums, and checks that there are six archives plus the checksum file. For stable tags it renders the Homebrew formula and runs `ruby -c` on it. It renders the npm package. It creates no release, pushes nothing and needs no secret. It uploads the built files as a workflow artifact.
 
 4. Publish the same tag.
 
@@ -109,7 +122,7 @@ The release job checks that the tag still points at the commit that was built, a
    gh workflow run release.yml -f tag=vX.Y.Z -f publish=true
    ```
 
-   Before anything is published, the run refuses a tag that already has a published release. For a stable tag with Homebrew enabled, it also fails if `HOMEBREW_TAP_DEPLOY_KEY` is not set. Then it attests the archives and checksums, creates a draft release with generated notes, uploads the assets and publishes the release. After that, the Homebrew job pushes the formula to the tap (stable tags only), and the npm job publishes the package (when npm is enabled).
+   Before anything is published, the run refuses a tag that already has a published release. For a stable tag with Homebrew enabled, it also fails if `HOMEBREW_TAP_DEPLOY_KEY` is not set. Then it attests the archives and checksums, creates a draft release whose notes are the tag's section in `CHANGELOG.md`, uploads the assets and publishes the release. After that, the Homebrew job pushes the formula to the tap (stable tags only), and the npm job publishes the package (when npm is enabled).
 
 5. Check the result.
 
@@ -127,6 +140,7 @@ The release job checks that the tag still points at the commit that was built, a
 - A published release is accepted if every asset is byte-identical to the build, and nothing is changed. If a published release is missing assets, the job fails and does not modify the release.
 - The Homebrew job exits without a push when the tap already has the same `version` line.
 - The npm job skips the publish when that version is already on npm. It still reconciles the dist-tags.
+- Release notes are set only when the release is created. A re-run does not change the body of an existing draft or published release.
 
 ## Homebrew
 
@@ -222,17 +236,17 @@ Run the `package` command from a checkout of the `vHIGHER` tag. Copy `dist/packa
 
 ## Upgrading spine in a tool
 
-spine is pre-1.0, so any release may break compatibility. Pin an exact version.
+spine is pre-1.0 and has no tagged releases, so any commit may break compatibility. Pin an exact commit.
 
-1. Get the full commit SHA of the spine tag. In a spine clone, run `git rev-parse vX.Y.Z^{commit}`.
+1. Get the full commit SHA of the spine commit to use. In a spine clone, run `git rev-parse <commit>`.
 2. Update the spine version in `go.mod`.
 
    ```sh
-   go get github.com/scoutbin/spine@vX.Y.Z
+   go get github.com/scoutbin/spine@<full commit SHA>
    go mod tidy
    ```
 
-3. Set the SHA and the `# vX.Y.Z` comment in the `uses:` lines of `ci.yml` and `release.yml`.
+3. Set the SHA in the `uses:` lines of `ci.yml` and `release.yml`, and the `# <pseudo-version>` comment to the version `go.mod` now pins.
 4. Check the contract. `go tool spine manifest` prints `contract=N`. The reusable workflows expect a fixed value, set by `SPINE_CONTRACT` in `go-ci.yml` and `go-release.yml`. If they differ, the contract check fails in the CI workflow, and the release workflow fails in `resolve`. The message says to bump the workflow ref and `go.mod` together.
 5. Regenerate the installers and check them.
 
@@ -246,27 +260,13 @@ spine is pre-1.0, so any release may break compatibility. Pin an exact version.
 
 The release workflow checks out the tag and reads `spine.json` and `go.mod` from it. Raising the workflow SHA to a spine version with a different contract, while the tag's `go.mod` still pins the older spine, fails at `resolve`.
 
-## Releasing spine
+## Changing spine
 
-1. Run `ci.yml` from the Actions tab on the commit to tag. It is the only workflow that runs the installer, Homebrew, npm, pnpm and action suites.
-2. Tag the commit and push the tag.
+spine is not tagged or released. Tools consume a commit: a Go pseudo-version from `go get github.com/scoutbin/spine@<full commit SHA>`, and the same SHA in the workflow `uses:` lines. See [Upgrading spine in a tool](#upgrading-spine-in-a-tool).
 
-   ```sh
-   git tag vX.Y.Z <commit>
-   git push origin vX.Y.Z
-   ```
+Run `ci.yml` from the Actions tab on the commit a tool will pin. It is the only workflow that runs the installer, Homebrew, npm, pnpm and action suites.
 
-3. Check that the module resolves.
-
-   ```sh
-   go list -m github.com/scoutbin/spine@vX.Y.Z
-   ```
-
-Tools pick up the release by pinning the SHA of the tag, as described above.
-
-Tags are permanent. The Go module proxy caches published versions, so a bad tag cannot be replaced. Release a new version instead.
-
-When the dev CLI output or the `spine.json` schema changes incompatibly, raise `Contract` in `internal/devcmd` and set `SPINE_CONTRACT` to the same value in `go-ci.yml` and `go-release.yml`, in the same change. The value is `1` at the time of writing.
+When the dev CLI output or the `spine.json` schema changes incompatibly, raise `Contract` in `internal/devcmd` and set `SPINE_CONTRACT` to the same value in `go-ci.yml` and `go-release.yml`, in the same change. The value is `2` at the time of writing.
 
 ## Private repositories
 

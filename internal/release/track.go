@@ -87,6 +87,27 @@ func SelectTarget(current string, releases []string) (string, bool) {
 	return target, true
 }
 
+// PreviousTag returns the highest valid release tag in tags that is lower than
+// tag. A stable tag is compared with stable tags only, so its predecessor is the
+// last stable release. A prerelease tag is compared with every track. Tags that
+// fail ValidatePushedTag are ignored, and so is tag itself. The caller passes
+// only the tags reachable from the commit being released.
+func PreviousTag(tag string, tags []string) (string, bool) {
+	track, err := ValidatePushedTag(tag)
+	if err != nil {
+		return "", false
+	}
+	candidates := []Track{Stable}
+	if track.Prerelease() {
+		candidates = Alpha.Path()
+	}
+	lower := slices.DeleteFunc(slices.Clone(tags), func(t string) bool {
+		_, err := ValidatePushedTag(t)
+		return err != nil || Compare(t, tag) >= 0
+	})
+	return highestTag(lower, inTracks(candidates))
+}
+
 // ValidatePushedTag accepts the tags a person pushes to release: vX.Y.Z and
 // vX.Y.Z-(alpha|beta|rc).N with N >= 1.
 func ValidatePushedTag(tag string) (Track, error) {

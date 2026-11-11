@@ -7,11 +7,13 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scoutbin/spine/internal/devcmd"
 	"github.com/scoutbin/spine/test/testutil"
@@ -57,19 +59,19 @@ func run(t *testing.T, tc testcase) {
 func TestManifest(t *testing.T) {
 	// Changing the emitted keys or values means bumping devcmd.Contract.
 	const (
-		full = "contract=1\nname=demo\n" +
+		full = "contract=2\nname=demo\n" +
 			"homebrew=true\nhomebrew_tap=scoutbin/homebrew-tap\nhomebrew_formula=scoutbin/tap/demo\n" +
 			"npm=true\nnpm_package=@scoutbin/demo\n" +
 			"action=true\n"
-		homebrewOnly = "contract=1\nname=demo\n" +
+		homebrewOnly = "contract=2\nname=demo\n" +
 			"homebrew=true\nhomebrew_tap=scoutbin/homebrew-tap\nhomebrew_formula=scoutbin/tap/demo\n" +
 			"npm=false\nnpm_package=\n" +
 			"action=false\n"
-		npmOnly = "contract=1\nname=demo\n" +
+		npmOnly = "contract=2\nname=demo\n" +
 			"homebrew=false\nhomebrew_tap=\nhomebrew_formula=\n" +
 			"npm=true\nnpm_package=@scoutbin/demo\n" +
 			"action=false\n"
-		minimal = "contract=1\nname=demo\n" +
+		minimal = "contract=2\nname=demo\n" +
 			"homebrew=false\nhomebrew_tap=\nhomebrew_formula=\n" +
 			"npm=false\nnpm_package=\n" +
 			"action=false\n"
@@ -393,5 +395,158 @@ func TestPackageNpmLayout(t *testing.T) {
 		t.Fatal(err)
 	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
 		t.Errorf("launcher.js mode = %v, want 0755", info.Mode().Perm())
+	}
+}
+
+// newGitRepo creates a repository in a temp directory, makes it the working
+// directory and leaves its history as, oldest first: initial, add parser
+// (v1.0.0), add flags (v1.1.0-rc.1), feature work and main work on two branches
+// joined by a merge commit, polish output (HEAD).
+func newGitRepo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Chdir(t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, role := range []string{"AUTHOR", "COMMITTER"} {
+		t.Setenv("GIT_"+role+"_NAME", "Test")
+		t.Setenv("GIT_"+role+"_EMAIL", "test@example.com")
+	}
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	clock := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	commit := func(subject string) {
+		t.Helper()
+		clock = clock.Add(time.Hour)
+		t.Setenv("GIT_AUTHOR_DATE", clock.Format(time.RFC3339))
+		t.Setenv("GIT_COMMITTER_DATE", clock.Format(time.RFC3339))
+		git("commit", "--allow-empty", "-m", subject)
+	}
+	git("-c", "init.defaultBranch=main", "init")
+	commit("initial")
+	commit("add parser")
+	git("tag", "v1.0.0")
+	commit("add flags")
+	git("tag", "v1.1.0-rc.1")
+	git("checkout", "-b", "feature")
+	commit("feature work")
+	git("checkout", "main")
+	commit("main work")
+	clock = clock.Add(time.Hour)
+	t.Setenv("GIT_AUTHOR_DATE", clock.Format(time.RFC3339))
+	t.Setenv("GIT_COMMITTER_DATE", clock.Format(time.RFC3339))
+	git("merge", "--no-ff", "-m", "Merge feature", "feature")
+	commit("polish output")
+}
+
+func TestChangelog(t *testing.T) {
+	const existing = "# Changelog\n\n## v1.1.0-rc.1 - 2026-01-01\n\n- add flags\n"
+	testcases := []struct {
+		name      string
+		tag       string
+		file      string // CHANGELOG.md before the run; no file when empty
+		headTag   string // extra tag on HEAD before the run
+		wantCode  int
+		wantOut   string
+		stderrHas string
+		wantFile  string // CHANGELOG.md afterwards, with {date} for today; the file before the run when empty
+	}{
+		{
+			name: "stable after an rc is based on the previous stable", tag: "v1.1.0",
+			wantOut:  "base=v1.0.0\ncommits=4\n",
+			wantFile: "# Changelog\n\n## v1.1.0 - {date}\n\n- polish output\n- main work\n- feature work\n- add flags\n",
+		},
+		{
+			name: "second rc is based on the first and goes above it", tag: "v1.1.0-rc.2", file: existing,
+			wantOut:  "base=v1.1.0-rc.1\ncommits=3\n",
+			wantFile: "# Changelog\n\n## v1.1.0-rc.2 - {date}\n\n- polish output\n- main work\n- feature work\n\n## v1.1.0-rc.1 - 2026-01-01\n\n- add flags\n",
+		},
+		{
+			name: "first release lists every non-merge commit", tag: "v0.1.0",
+			wantOut:  "base=\ncommits=6\n",
+			wantFile: "# Changelog\n\n## v0.1.0 - {date}\n\n- polish output\n- main work\n- feature work\n- add flags\n- add parser\n- initial\n",
+		},
+		{name: "existing section", tag: "v1.1.0-rc.1", file: existing, wantCode: 2, stderrHas: "already has a section for v1.1.0-rc.1"},
+		{name: "invalid tag", tag: "v1.1.0-nightly.1", wantCode: 2, stderrHas: "unknown prerelease"},
+		{name: "invalid tag keeps the file", tag: "1.1.0", file: existing, wantCode: 2, stderrHas: "must start with v"},
+		{name: "empty range", tag: "v1.2.0", headTag: "v1.1.0", wantCode: 2, stderrHas: "no commits to list for v1.2.0"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			newGitRepo(t)
+			if tc.headTag != "" {
+				if out, err := exec.Command("git", "tag", tc.headTag).CombinedOutput(); err != nil {
+					t.Fatalf("git tag: %v\n%s", err, out)
+				}
+			}
+			if tc.file != "" {
+				if err := os.WriteFile("CHANGELOG.md", []byte(tc.file), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := devcmd.Run([]string{"changelog", tc.tag}, &stdout, &stderr)
+
+			if code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tc.wantCode, stderr.String())
+			}
+			if stdout.String() != tc.wantOut {
+				t.Errorf("stdout = %q, want %q", stdout.String(), tc.wantOut)
+			}
+			if !strings.Contains(stderr.String(), tc.stderrHas) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tc.stderrHas)
+			}
+			want := cmp.Or(strings.ReplaceAll(tc.wantFile, "{date}", time.Now().Format(time.DateOnly)), tc.file)
+			got, err := os.ReadFile("CHANGELOG.md")
+			if want == "" {
+				if !os.IsNotExist(err) {
+					t.Errorf("CHANGELOG.md exists (read error %v), want it missing", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != want {
+				t.Errorf("CHANGELOG.md = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestNotes(t *testing.T) {
+	const changelog = "# Changelog\n\n## v1.2.0 - 2026-02-01\n\n- add flags\n- add parser\n\n## v1.2.0-rc.1 - 2026-01-15\n\n- add parser\n\n## v1.1.0 - 2026-01-01\n\n- initial\n"
+	testcases := []struct {
+		name      string
+		tag       string
+		file      string // CHANGELOG.md content; no file when empty
+		wantCode  int
+		wantOut   string
+		stderrHas string
+	}{
+		{name: "section in the middle", tag: "v1.2.0-rc.1", file: changelog, wantOut: "- add parser\n"},
+		{name: "stable section does not match the prerelease section below it", tag: "v1.2.0", file: changelog, wantOut: "- add flags\n- add parser\n"},
+		{name: "last section", tag: "v1.1.0", file: changelog, wantOut: "- initial\n"},
+		{name: "missing section", tag: "v1.3.0", file: changelog, wantCode: 2, stderrHas: "has no section for v1.3.0: run go tool spine changelog v1.3.0"},
+		{name: "missing file", tag: "v1.2.0", wantCode: 2, stderrHas: "CHANGELOG.md not found: run go tool spine changelog v1.2.0"},
+		{name: "invalid tag", tag: "v1.2.0-nightly.1", file: changelog, wantCode: 2, stderrHas: "unknown prerelease"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			if tc.file != "" {
+				if err := os.WriteFile("CHANGELOG.md", []byte(tc.file), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run(t, testcase{args: []string{"notes", tc.tag}, wantCode: tc.wantCode, wantStdout: tc.wantOut, stderrHas: tc.stderrHas})
+		})
 	}
 }
