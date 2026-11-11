@@ -1,0 +1,97 @@
+name: Go CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  SPINE_CONTRACT: "1"
+  CI_TAG: v0.0.0-ci
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Assert spine contract
+        run: |
+          manifest=$(go tool spine manifest)
+          contract=$(printf '%s\n' "$manifest" | sed -n 's/^contract=//p')
+          if [ "$contract" != "$SPINE_CONTRACT" ]; then
+            echo "::error::spine contract is '$contract', this workflow expects '$SPINE_CONTRACT': bump the spine workflow ref and go.mod together"
+            exit 1
+          fi
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: contract
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gofmt
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test ./...
+
+  # A CI version (v0.0.0-ci) exercises the build only. The release workflow
+  # builds its own dist/ from the tag.
+  dist:
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go tool spine dist --version "$CI_TAG"
+      - name: Verify checksums
+        working-directory: dist
+        run: |
+          sha256sum -c checksums.txt
+          # One archive per release target: 3 OS x 2 arch.
+          test "$(wc -l < checksums.txt)" -eq 6
+
+  generated:
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go tool spine gen --check
