@@ -267,6 +267,11 @@ func TestPackage(t *testing.T) {
 		{name: "renders into dist/packages by default", args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantPath: "dist/packages/homebrew/demo.rb", wantHas: wantFormula},
 		{name: "reads checksums from --dist and writes to --out", distDir: "alt", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--dist", "{dist}", "--out", "{work}/custom"}, wantPath: "custom/homebrew/demo.rb", wantHas: wantFormula},
 		{name: "base url replaces the release URL", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--base-url", "http://127.0.0.1:8080/"}, wantPath: "dist/packages/homebrew/demo.rb", wantHas: []string{`url "http://127.0.0.1:8080/demo_1.2.3_darwin_arm64.tar.gz"`}},
+		{name: "npm renders package.json", args: []string{"package", "npm", "--tag", "v1.2.3"}, wantPath: "dist/packages/npm/package.json", wantHas: []string{`"name": "@scoutbin/demo"`, `"version": "1.2.3"`}},
+		{name: "npm accepts a prerelease tag", checksums: testutil.Checksums("v1.2.3-rc.1"), args: []string{"package", "npm", "--tag", "v1.2.3-rc.1"}, wantPath: "dist/packages/npm/install.js", wantHas: []string{`const VERSION = "1.2.3-rc.1";`, `"demo_1.2.3-rc.1_windows_arm64.zip", "` + fmt.Sprintf("%064x", 6) + `"`}},
+		{name: "npm base url replaces the release URL", args: []string{"package", "npm", "--tag", "v1.2.3", "--base-url", "http://127.0.0.1:8080/"}, wantPath: "dist/packages/npm/install.js", wantHas: []string{`const RELEASE_URL = "http://127.0.0.1:8080";`}},
+		{name: "npm unknown prerelease", args: []string{"package", "npm", "--tag", "v1.2.3-nightly.1"}, wantCode: 2, stderrHas: "unknown prerelease"},
+		{name: "npm archive missing from the checksums", checksums: testutil.ChecksumsWithout(testutil.Checksums("v1.2.3"), "windows_arm64"), args: []string{"package", "npm", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "no checksum listed for demo_1.2.3_windows_arm64.zip"},
 		{name: "missing checksums file", checksums: noChecksums, args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "checksums.txt"},
 		{name: "archive missing from the checksums", checksums: testutil.ChecksumsWithout(testutil.Checksums("v1.2.3"), "linux_arm64"), args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "no checksum listed for demo_1.2.3_linux_arm64.tar.gz"},
 		{name: "rc tag", args: []string{"package", "homebrew", "--tag", "v1.2.3-rc.1"}, wantCode: 2, stderrHas: "Homebrew carries stable releases only"},
@@ -329,5 +334,64 @@ func TestPackage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDistTags(t *testing.T) {
+	const (
+		versions = `["1.2.2","1.2.3-alpha.1","1.2.3-beta.1","1.2.3-rc.1","1.2.3"]`
+		withRC   = `["1.2.2","1.2.3-alpha.1","1.2.3-beta.1","1.2.3-rc.1","1.2.3","1.3.0-rc.1"]`
+		tags     = `{"latest":"1.2.3","alpha":"1.2.3-alpha.1","beta":"1.2.3-beta.1","rc":"1.2.3-rc.1"}`
+	)
+	testcases := []testcase{
+		{name: "stable release moves every prerelease dist-tag", args: []string{"dist-tags", "v1.2.3", "--versions", versions, "--dist-tags", tags}, wantStdout: "alpha=1.2.3\nbeta=1.2.3\nrc=1.2.3\n"},
+		{name: "rc release moves the alpha and beta dist-tags only", args: []string{"dist-tags", "v1.3.0-rc.1", "--versions", withRC, "--dist-tags", `{"latest":"1.2.3","alpha":"1.2.3-alpha.1","beta":"1.2.3-beta.1","rc":"1.3.0-rc.1"}`}, wantStdout: "alpha=1.3.0-rc.1\nbeta=1.3.0-rc.1\n"},
+		{name: "pushed tag counts before the registry lists it", args: []string{"dist-tags", "v1.2.4", "--versions", versions, "--dist-tags", `{"rc":"1.2.3-rc.1"}`}, wantStdout: "rc=1.2.4\n"},
+		{name: "nothing to move prints nothing", args: []string{"dist-tags", "v1.3.0-rc.1", "--versions", withRC, "--dist-tags", `{"latest":"1.2.3","rc":"1.3.0-rc.1"}`}},
+		{name: "missing dist-tag is not created", args: []string{"dist-tags", "v1.2.3", "--versions", versions, "--dist-tags", `{"latest":"1.2.3"}`}},
+		{name: "unknown prerelease tag", args: []string{"dist-tags", "v1.2.3-nightly.1", "--versions", versions, "--dist-tags", tags}, wantCode: 2, stderrHas: "unknown prerelease"},
+		{name: "missing tag", args: []string{"dist-tags", "--versions", versions, "--dist-tags", tags}, wantCode: 2, stderrHas: "missing required argument <tag>"},
+		{name: "missing versions", args: []string{"dist-tags", "v1.2.3", "--dist-tags", tags}, wantCode: 2, stderrHas: "--versions must be a JSON array"},
+		{name: "single version as a bare string", args: []string{"dist-tags", "v1.2.3", "--versions", `"1.2.3-rc.1"`, "--dist-tags", `{"rc":"1.2.3-rc.1"}`}, wantStdout: "rc=1.2.3\n"},
+		{name: "versions is not an array or string", args: []string{"dist-tags", "v1.2.3", "--versions", `{"1.2.3":true}`, "--dist-tags", tags}, wantCode: 2, stderrHas: "--versions must be a JSON array"},
+		{name: "missing dist-tags", args: []string{"dist-tags", "v1.2.3", "--versions", versions}, wantCode: 2, stderrHas: "--dist-tags must be a JSON object"},
+		{name: "dist-tags is not an object", args: []string{"dist-tags", "v1.2.3", "--versions", versions, "--dist-tags", `["rc"]`}, wantCode: 2, stderrHas: "--dist-tags must be a JSON object"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) { run(t, tc) })
+	}
+}
+
+func TestPackageNpmLayout(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	manifestDir := testutil.WriteManifest(t, testutil.Manifest)
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("dist/checksums.txt", []byte(testutil.Checksums("v1.2.3")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	if code := devcmd.Run([]string{"--manifest", filepath.Join(manifestDir, "spine.json"), "package", "npm", "--tag", "v1.2.3"}, io.Discard, &stderr); code != 0 {
+		t.Fatalf("exit code = %d (stderr %q)", code, stderr.String())
+	}
+
+	entries, err := os.ReadDir("dist/packages/npm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if want := []string{"install.js", "launcher.js", "package.json"}; !slices.Equal(got, want) {
+		t.Errorf("package files = %v, want %v", got, want)
+	}
+	if info, err := os.Stat("dist/packages/npm/launcher.js"); err != nil {
+		t.Fatal(err)
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+		t.Errorf("launcher.js mode = %v, want 0755", info.Mode().Perm())
 	}
 }

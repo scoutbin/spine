@@ -1,0 +1,36 @@
+{
+  "name": "@scoutbin/demo",
+  "version": "1.2.3",
+  "description": "Demonstrate the spine",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/scoutbin/demo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scoutbin/demo.git"
+  },
+  "bin": {
+    "demo": "launcher.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js",
+    "launcher.js"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

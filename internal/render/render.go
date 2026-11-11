@@ -41,6 +41,7 @@ var funcs = template.FuncMap{
 	"comment":    comment,
 	"yaml":       yaml,
 	"ruby":       ruby,
+	"js":         js,
 	"join":       strings.Join,
 	"trimPrefix": strings.TrimPrefix,
 }
@@ -170,4 +171,12 @@ func ruby(s string) string {
 	}
 	out.WriteByte('"')
 	return out.String()
+}
+
+// js renders v as a JavaScript literal. JSON is valid JavaScript, and its
+// encoding escapes quotes, backslashes, control characters, the line and
+// paragraph separators and the characters that could close a script element.
+func js(v any) (string, error) {
+	b, err := json.Marshal(v)
+	return string(b), err
 }

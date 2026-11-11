@@ -5,6 +5,7 @@ package devcmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,7 +34,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root := &cli.Root{
 		Command:  cli.Command{Name: "spine", Summary: "Development tool for projects built on spine"},
 		Globals:  []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
-		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand()},
+		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand(), distTagsCommand(stdout)},
 	}
 	return root.Execute(args, nil, stdout, stderr)
 }
@@ -132,6 +133,7 @@ func genCommand() *cli.Command {
 // packagers renders the package of each channel that has a release-time package.
 var packagers = map[string]func(manifest.Tool, render.Release) ([]render.File, error){
 	"homebrew": render.Homebrew,
+	"npm":      render.Npm,
 }
 
 func packageCommand() *cli.Command {
@@ -144,7 +146,7 @@ func packageCommand() *cli.Command {
 			{Name: "tag", Kind: cli.KindString, Help: "Release tag such as v1.2.3"},
 			{Name: "dist", Kind: cli.KindString, Default: "dist", Help: "Directory holding the checksums.txt written by dist"},
 			{Name: "out", Kind: cli.KindString, Default: "dist/packages", Help: "Directory to write the package directory to"},
-			{Name: "base-url", Kind: cli.KindString, Help: "Download the release assets from this URL instead of GitHub (tests only)"},
+			{Name: "base-url", Kind: cli.KindString, Help: "Download the release archives from this directory URL instead of GitHub (tests only)"},
 		},
 		Run: func(ctx *cli.Context) error {
 			channel := ctx.Arg("channel")
@@ -173,6 +175,43 @@ func packageCommand() *cli.Command {
 				return err
 			}
 			return writeFiles(filepath.Join(ctx.String("out"), channel), files)
+		},
+	}
+}
+
+func distTagsCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:    "dist-tags",
+		Summary: "Print the npm dist-tag moves after a publish as <dist-tag>=<version> lines, one per move",
+		Args:    []cli.Arg{{Name: "tag", Required: true, Help: "Release tag that was just published, such as v1.2.3 or v1.2.3-rc.1"}},
+		Flags: []cli.Flag{
+			{Name: "versions", Kind: cli.KindString, Help: "Published versions as a JSON array, as printed by npm view <package> versions --json"},
+			{Name: "dist-tags", Kind: cli.KindString, Help: "Current dist-tags as a JSON object, as printed by npm view <package> dist-tags --json"},
+		},
+		Run: func(ctx *cli.Context) error {
+			if _, err := release.ValidatePushedTag(ctx.Arg("tag")); err != nil {
+				return err
+			}
+			var versions []string
+			if err := json.Unmarshal([]byte(ctx.String("versions")), &versions); err != nil {
+				// npm prints a bare string when a package has exactly one version.
+				var only string
+				if json.Unmarshal([]byte(ctx.String("versions")), &only) != nil {
+					return fmt.Errorf("--versions must be a JSON array of versions: %w", err)
+				}
+				versions = []string{only}
+			}
+			var distTags map[string]string
+			if err := json.Unmarshal([]byte(ctx.String("dist-tags")), &distTags); err != nil {
+				return fmt.Errorf("--dist-tags must be a JSON object of dist-tags: %w", err)
+			}
+			// The registry can lag behind the publish that just finished.
+			changes := release.DistTagChanges(append(versions, ctx.Arg("tag")), distTags)
+			var kv []string
+			for _, c := range changes {
+				kv = append(kv, c.Tag, c.Version)
+			}
+			return printPairs(stdout, kv...)
 		},
 	}
 }
