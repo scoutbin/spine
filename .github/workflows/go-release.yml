@@ -114,6 +114,7 @@ jobs:
           sha256sum -c checksums.txt
           # One archive per release target (3 OS x 2 arch) plus checksums.txt.
           test "$(wc -l < checksums.txt)" -eq 6
+          # shellcheck disable=SC2012
           test "$(ls -1 | wc -l)" -eq 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -192,6 +193,7 @@ jobs:
           }
 
           expected_names=$({ awk '{print $2}' dist/checksums.txt; echo checksums.txt; } | sort)
+          # shellcheck disable=SC2012
           [ "$(ls -1 dist | sort)" = "$expected_names" ] ||
             fail "Files in dist/ differ from the archives listed in checksums.txt plus checksums.txt itself"
           mapfile -t expected <<<"$expected_names"

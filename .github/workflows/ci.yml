@@ -118,6 +118,7 @@ jobs:
         env:
           SCRIPT: generated/install.ps1
         run: |
+          # shellcheck disable=SC2016
           pwsh -NoProfile -Command '
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:SCRIPT).Path, [ref]$null, [ref]$errors) | Out-Null
@@ -407,6 +408,7 @@ jobs:
         run: |
           fail() { echo "::error::$*"; exit 1; }
           dir="$RUNNER_TEMP/piped"
+          # shellcheck disable=SC2002
           cat generated/install.sh | EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh
           case "$("$dir/example" --version)" in
             "example $CI_TAG (commit "*) ;;
@@ -444,6 +446,7 @@ jobs:
           ! grep -qF "will shadow" "$RUNNER_TEMP/path.err" || fail "shadow warning for a symlink to the installed example"
       - name: Install zsh and fish to check the profile lines
         if: startsWith(matrix.os, 'ubuntu')
+        timeout-minutes: 5
         run: |
           for attempt in 1 2 3; do
             sudo apt-get update && sudo apt-get install -y zsh fish && exit 0
@@ -518,6 +521,7 @@ jobs:
             grep -qF "already adds $dir" "$RUNNER_TEMP/profile.err" || fail "$label: missing the already-added message"
 
             if command -v "$runner" >/dev/null 2>&1; then
+              # shellcheck disable=SC2016
               case $runner in
                 fish) got=$(F="$file" fish -c 'source $F; string join : $PATH') ;;
                 *) got=$(F="$file" "$runner" -c '. "$F"; printf %s "$PATH"') ;;
