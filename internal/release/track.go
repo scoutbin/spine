@@ -3,6 +3,7 @@ package release
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -106,6 +107,62 @@ func PreviousTag(tag string, tags []string) (string, bool) {
 		return err != nil || Compare(t, tag) >= 0
 	})
 	return highestTag(lower, inTracks(candidates))
+}
+
+// NextTag returns the tag that releases bump (major, minor or patch) of the
+// highest stable tag in tags as track: the plain core version for Stable, or
+// that core with the next -track.N for a prerelease track. A bump names the
+// target core, so a prerelease of the core is promoted by releasing it as
+// Stable. With no stable tag the core starts from v0.0.0. Tags that fail
+// ValidatePushedTag are ignored. It fails when the result is not higher than
+// every valid tag, so a release never goes backwards. The caller passes only the
+// tags reachable from the commit being released.
+func NextTag(tags []string, bump string, track Track) (string, error) {
+	if !slices.Contains([]Track{Stable, Alpha, Beta, RC}, track) {
+		return "", fmt.Errorf("unknown track %q: want alpha, beta or rc", track)
+	}
+	valid := slices.DeleteFunc(slices.Clone(tags), func(t string) bool {
+		_, err := ValidatePushedTag(t)
+		return err != nil
+	})
+
+	var core Version
+	if stable, ok := highestTag(valid, inTracks([]Track{Stable})); ok {
+		core, _ = ParseVersion(stable)
+	}
+	switch bump {
+	case "major":
+		core = Version{Major: core.Major + 1}
+	case "minor":
+		core = Version{Major: core.Major, Minor: core.Minor + 1}
+	case "patch":
+		core = Version{Major: core.Major, Minor: core.Minor, Patch: core.Patch + 1}
+	default:
+		return "", fmt.Errorf("unknown bump %q: want major, minor or patch", bump)
+	}
+
+	next := fmt.Sprintf("v%d.%d.%d", core.Major, core.Minor, core.Patch)
+	if track.Prerelease() {
+		next = fmt.Sprintf("%s-%s.%d", next, track, highestPrereleaseNumber(valid, next, track)+1)
+	}
+	if highest, _ := highestTag(valid, func(Version) bool { return true }); highest != "" && Compare(next, highest) <= 0 {
+		return "", fmt.Errorf("next tag %s is not higher than %s", next, highest)
+	}
+	return next, nil
+}
+
+// highestPrereleaseNumber returns the highest N among the tags of the form
+// core-track.N, or 0 when there is none.
+func highestPrereleaseNumber(tags []string, core string, track Track) uint64 {
+	var highest uint64
+	prefix := core + "-" + string(track) + "."
+	for _, tag := range tags {
+		n, err := strconv.ParseUint(strings.TrimPrefix(tag, prefix), 10, 64)
+		if strings.HasPrefix(tag, prefix) && err == nil {
+			highest = max(highest, n)
+		}
+	}
+	return highest
 }
 
 // ValidatePushedTag accepts the tags a person pushes to release: vX.Y.Z and

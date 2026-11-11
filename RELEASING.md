@@ -5,7 +5,7 @@ This covers releasing a tool that calls spine's reusable workflows, upgrading sp
 ## Tool repository setup
 
 - `spine.json` at the repository root. Only the channels it enables run.
-- `CHANGELOG.md` at the repository root. `go tool spine changelog` creates it. See [Releasing a tool](#releasing-a-tool).
+- `CHANGELOG.md` at the repository root. `go tool spine change` creates it on the first release. See [Releasing a tool](#releasing-a-tool).
 - `.github/workflows/ci.yml` and `.github/workflows/release.yml`, shown below.
 - `HOMEBREW_TAP_DEPLOY_KEY` as a repository secret, if `channels.homebrew.tap` is set. It is needed only for a publish of a stable tag. Dry runs do not use it.
 - A trusted publisher on npmjs.com for the package, if `channels.npm.package` is set. See [npm](#npm).
@@ -77,9 +77,9 @@ Why the caller looks like this:
 
 Any other tag fails in the `resolve` job. That includes a missing `v`, build metadata (`+`), an unknown prerelease such as `-nightly.1`, and `-rc.0`.
 
-The release job checks that the tag still points at the commit that was built, and fails if it has moved. Do not move or delete a release tag.
+The release job checks that the tag still points at the commit that was built, and fails if it has moved. Do not move or delete a release tag once it is pushed.
 
-Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `resolve` fails without one. If a tag was pushed without a section, do not move or delete it. Add the section on the default branch and release the next tag number.
+Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `resolve` fails without one. If a tag was pushed without a section, do not move or delete it. Run `go tool spine change` again instead. It picks a number above the orphan tag.
 
 | Tag | GitHub release | npm dist-tag | Homebrew formula |
 | --- | --- | --- | --- |
@@ -88,27 +88,45 @@ Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `res
 
 ## Releasing a tool
 
-1. Prepare the release commit on up-to-date main, then merge it to the default branch.
+1. Update main and run the release command on it. The command adds a `## vX.Y.Z - YYYY-MM-DD` section to `CHANGELOG.md`, commits that file as `release vX.Y.Z` and creates the tag on that commit. It does not push.
 
    ```sh
+   git pull --ff-only
    git fetch --tags
-   go tool spine changelog vX.Y.Z
+   go tool spine change patch "Fix config loading on Windows"
    ```
 
-   The command adds a `## vX.Y.Z - YYYY-MM-DD` section at the top of `CHANGELOG.md`, with one line per non-merge commit since the previous release tag. For a stable tag, the previous tag is the previous stable. For a prerelease, it is the previous tag of any track. A first release lists every commit, so trim the list. Edit the section and commit it. If main moves before the merge, delete the section and run the command again. The command refuses to replace an existing section.
+   The bump is `major`, `minor` or `patch`, and it names the core version to release. The message is required. It becomes the first paragraph of the section. It can span lines, but no line may start with `## `.
 
-   The release tag must point at this commit.
+   - Without `--pre`, the tag is the core version. The base is the highest stable tag reachable from HEAD, or `v0.0.0` when there is none. This also promotes a prerelease: `minor` after `v1.3.0-rc.2` gives `v1.3.0`.
+   - With `--pre alpha`, `beta` or `rc`, the tag is a prerelease of that core version. Its number is one more than the highest existing one for that core version and track, or 1 when there is none.
+   - The new tag must be higher than every valid tag reachable from HEAD. Only reachable tags count, so a backport branch ignores newer tags on main.
+   - For the first release, `patch` gives `v0.0.1`, and `minor --pre alpha` gives `v0.1.0-alpha.1`.
 
-2. Create the tag and push it.
+   The section lists one line per non-merge commit since the previous tag, newest first. Commits that only change `CHANGELOG.md` are left out, so earlier release commits are not repeated. A first release has only the message.
+
+   The command writes nothing unless every check passes. It refuses an empty message, a detached HEAD, tracked changes, a tag or section that already exists for the new version, a next tag that is not higher than the highest reachable tag, and no commits since the previous tag. It does not fetch. If it fails after writing `CHANGELOG.md`, the error says what state is left. Nothing is rolled back.
+
+   Check the commit with `git show`. To change it before pushing, edit `CHANGELOG.md`, run `git commit -a --amend` and move the local tag with `git tag -f vX.Y.Z`. Nothing has been pushed at that point.
+
+   Run the push the command prints. The commit and the tag go together, and `--atomic` means neither lands if main has moved.
 
    ```sh
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
+   git push --atomic origin main vX.Y.Z
    ```
 
-   The tag's `go.mod` must pin a spine version whose contract matches the reusable workflow. See [Upgrading spine in a tool](#upgrading-spine-in-a-tool).
+   The flow pushes straight to main, so main must accept direct pushes. The tag's `go.mod` must pin a spine version whose contract matches the reusable workflow. See [Upgrading spine in a tool](#upgrading-spine-in-a-tool).
 
-3. Run a dry run. GitHub runs the `release.yml` on the ref you dispatch from. The code built is the tag's commit.
+   If the push is rejected, main moved and nothing reached origin. Run `git show --stat HEAD`. The subject must be `release vX.Y.Z` and the only changed file must be `CHANGELOG.md`. If either differs, stop, because `git reset --hard HEAD~1` would discard that other commit. Otherwise, recover locally and run the command again.
+
+   ```sh
+   git tag -d vX.Y.Z
+   git reset --hard HEAD~1
+   git pull --ff-only
+   git fetch --tags
+   ```
+
+2. Run a dry run. GitHub runs the `release.yml` on the ref you dispatch from. The code built is the tag's commit.
 
    ```sh
    gh workflow run release.yml -f tag=vX.Y.Z -f publish=false
@@ -116,7 +134,7 @@ Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `res
 
    The dry run reads the manifest, checks the contract and checks that `CHANGELOG.md` has a section for the tag. It runs `go test ./...` and builds the archives and `checksums.txt`. It checks the checksums, and checks that there are six archives plus the checksum file. For stable tags it renders the Homebrew formula and runs `ruby -c` on it. It renders the npm package. It creates no release, pushes nothing and needs no secret. It uploads the built files as a workflow artifact.
 
-4. Publish the same tag.
+3. Publish the same tag.
 
    ```sh
    gh workflow run release.yml -f tag=vX.Y.Z -f publish=true
@@ -124,7 +142,7 @@ Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `res
 
    Before anything is published, the run refuses a tag that already has a published release. For a stable tag with Homebrew enabled, it also fails if `HOMEBREW_TAP_DEPLOY_KEY` is not set. Then it attests the archives and checksums, creates a draft release whose notes are the tag's section in `CHANGELOG.md`, uploads the assets and publishes the release. After that, the Homebrew job pushes the formula to the tap (stable tags only), and the npm job publishes the package (when npm is enabled).
 
-5. Check the result.
+4. Check the result.
 
    ```sh
    gh release view vX.Y.Z

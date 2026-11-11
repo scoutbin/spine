@@ -77,7 +77,7 @@ jobs:
         run: |
           set -eu
           notes=$(go tool spine notes "$TAG") || {
-            echo "::error::CHANGELOG.md has no section for '$TAG'. Run 'go tool spine changelog $TAG', edit the section and commit it before tagging."
+            echo "::error::CHANGELOG.md has no section for '$TAG'. Release with 'go tool spine change', which writes the section, commits it and tags it. If '$TAG' was pushed without a section, release the next tag instead."
             exit 1
           }
           if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then

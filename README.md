@@ -152,7 +152,7 @@ These values are derived from `name`, so they have no fields of their own:
          homebrew-tap-deploy-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
    ```
 
-6. Add `CHANGELOG.md` at the repository root. `go tool spine changelog vX.Y.Z` drafts each release's section from git history, and the release workflow publishes that section as the release notes.
+6. `go tool spine change <bump> "<message>"` creates `CHANGELOG.md` at the repository root on the first release and writes each release's section. The release workflow publishes that section as the release notes.
 
 Secrets, the switch that enables publishing, and the spine upgrade procedure are in [RELEASING.md](RELEASING.md).
 

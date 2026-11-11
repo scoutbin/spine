@@ -154,6 +154,53 @@ func TestPreviousTag(t *testing.T) {
 	}
 }
 
+func TestNextTag(t *testing.T) {
+	testcases := []struct {
+		name    string
+		tags    []string
+		bump    string
+		track   release.Track
+		want    string
+		wantErr string
+	}{
+		{name: "first patch", bump: "patch", track: release.Stable, want: "v0.0.1"},
+		{name: "first minor", bump: "minor", track: release.Stable, want: "v0.1.0"},
+		{name: "first major", bump: "major", track: release.Stable, want: "v1.0.0"},
+		{name: "first alpha", bump: "minor", track: release.Alpha, want: "v0.1.0-alpha.1"},
+		{name: "patch after stable", tags: []string{"v1.2.3", "v1.2.0"}, bump: "patch", track: release.Stable, want: "v1.2.4"},
+		{name: "minor after stable", tags: []string{"v1.2.3"}, bump: "minor", track: release.Stable, want: "v1.3.0"},
+		{name: "major after stable", tags: []string{"v1.2.3"}, bump: "major", track: release.Stable, want: "v2.0.0"},
+		{name: "second rc", tags: []string{"v1.2.0", "v1.3.0-rc.1"}, bump: "minor", track: release.RC, want: "v1.3.0-rc.2"},
+		{name: "rc number compares numerically", tags: []string{"v1.2.0", "v1.3.0-rc.9", "v1.3.0-rc.2"}, bump: "minor", track: release.RC, want: "v1.3.0-rc.10"},
+		{name: "rc promoted to stable", tags: []string{"v1.2.0", "v1.3.0-rc.2"}, bump: "minor", track: release.Stable, want: "v1.3.0"},
+		{name: "alpha to beta", tags: []string{"v1.2.0", "v1.3.0-alpha.2"}, bump: "minor", track: release.Beta, want: "v1.3.0-beta.1"},
+		{name: "only prereleases and no stable", tags: []string{"v0.1.0-alpha.1"}, bump: "minor", track: release.Alpha, want: "v0.1.0-alpha.2"},
+		{name: "invalid and nightly tags are ignored", tags: []string{"v1.2.0", "v1.3.0-nightly.1", "v1.9.0-rc.0", "1.9.0", "v2.0.0+build", "latest"}, bump: "patch", track: release.Stable, want: "v1.2.1"},
+		{name: "rc back to beta", tags: []string{"v1.2.0", "v1.3.0-rc.1"}, bump: "minor", track: release.Beta, wantErr: "not higher than v1.3.0-rc.1"},
+		{name: "patch below a pending prerelease", tags: []string{"v1.2.0", "v1.3.0-rc.1"}, bump: "patch", track: release.Stable, wantErr: "not higher than v1.3.0-rc.1"},
+		{name: "prerelease below a pending prerelease of a higher core", tags: []string{"v1.2.0", "v1.4.0-rc.1"}, bump: "minor", track: release.RC, wantErr: "not higher than v1.4.0-rc.1"},
+		{name: "patch below the only prerelease", tags: []string{"v0.1.0-alpha.1"}, bump: "patch", track: release.Stable, wantErr: "not higher than v0.1.0-alpha.1"},
+		{name: "unknown bump", tags: []string{"v1.2.0"}, bump: "rc", track: release.Stable, wantErr: `unknown bump "rc"`},
+		{name: "empty bump", bump: "", track: release.Stable, wantErr: `unknown bump ""`},
+		{name: "unknown track", bump: "patch", track: release.Track("nightly"), wantErr: `unknown track "nightly"`},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := release.NextTag(tc.tags, tc.bump, tc.track)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("NextTag(%v, %q, %q) = %q, %v, want error containing %q", tc.tags, tc.bump, tc.track, got, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("NextTag(%v, %q, %q) = %q, %v, want %q", tc.tags, tc.bump, tc.track, got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidatePushedTag(t *testing.T) {
 	testcases := []struct {
 		tag     string

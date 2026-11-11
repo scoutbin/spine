@@ -11,6 +11,7 @@ func TestPrepend(t *testing.T) {
 		name     string
 		content  string
 		tag      string
+		message  string
 		subjects []string
 		want     string
 		wantErr  bool
@@ -18,41 +19,47 @@ func TestPrepend(t *testing.T) {
 		{
 			name:     "empty content creates the titled file",
 			tag:      "v1.0.0",
+			message:  "Msg",
 			subjects: []string{"Add parser", "Fix crash"},
-			want:     "# Changelog\n\n## v1.0.0 - 2026-11-11\n\n- Add parser\n- Fix crash\n",
+			want:     "# Changelog\n\n## v1.0.0 - 2026-11-11\n\nMsg\n\n- Add parser\n- Fix crash\n",
 		},
 		{
 			name:     "section goes above the newest section",
 			content:  "# Changelog\n\n## v1.0.0 - 2026-10-01\n\n- Old\n\n## v0.9.0 - 2026-09-01\n\n- Older\n",
 			tag:      "v1.1.0",
+			message:  "Msg",
 			subjects: []string{"New"},
-			want:     "# Changelog\n\n## v1.1.0 - 2026-11-11\n\n- New\n\n## v1.0.0 - 2026-10-01\n\n- Old\n\n## v0.9.0 - 2026-09-01\n\n- Older\n",
+			want:     "# Changelog\n\n## v1.1.0 - 2026-11-11\n\nMsg\n\n- New\n\n## v1.0.0 - 2026-10-01\n\n- Old\n\n## v0.9.0 - 2026-09-01\n\n- Older\n",
 		},
 		{
 			name:     "file without a title keeps its start",
 			content:  "## v1.0.0 - 2026-10-01\n\n- Old\n",
 			tag:      "v1.1.0",
+			message:  "Msg",
 			subjects: []string{"New"},
-			want:     "## v1.1.0 - 2026-11-11\n\n- New\n\n## v1.0.0 - 2026-10-01\n\n- Old\n",
+			want:     "## v1.1.0 - 2026-11-11\n\nMsg\n\n- New\n\n## v1.0.0 - 2026-10-01\n\n- Old\n",
 		},
 		{
 			name:     "title without sections appends at the end",
 			content:  "# Changelog\n",
 			tag:      "v1.0.0",
+			message:  "Msg",
 			subjects: []string{"First"},
-			want:     "# Changelog\n\n## v1.0.0 - 2026-11-11\n\n- First\n",
+			want:     "# Changelog\n\n## v1.0.0 - 2026-11-11\n\nMsg\n\n- First\n",
 		},
 		{
 			name:     "text without a heading and without a final newline appends at the end",
 			content:  "# Changelog\n\nNotable changes.",
 			tag:      "v1.0.0",
+			message:  "Msg",
 			subjects: []string{"First"},
-			want:     "# Changelog\n\nNotable changes.\n\n## v1.0.0 - 2026-11-11\n\n- First\n",
+			want:     "# Changelog\n\nNotable changes.\n\n## v1.0.0 - 2026-11-11\n\nMsg\n\n- First\n",
 		},
 		{
 			name:     "existing section is refused",
 			content:  "# Changelog\n\n## v1.0.0 - 2026-10-01\n\n- Old\n",
 			tag:      "v1.0.0",
+			message:  "Msg",
 			subjects: []string{"New"},
 			wantErr:  true,
 		},
@@ -60,6 +67,7 @@ func TestPrepend(t *testing.T) {
 			name:     "existing section without a date is refused",
 			content:  "# Changelog\n\n## v1.0.0\n\n- Old\n",
 			tag:      "v1.0.0",
+			message:  "Msg",
 			subjects: []string{"New"},
 			wantErr:  true,
 		},
@@ -67,21 +75,47 @@ func TestPrepend(t *testing.T) {
 			name:     "prerelease section does not block its stable tag",
 			content:  "# Changelog\n\n## v1.2.0-rc.1 - 2026-10-01\n\n- Old\n",
 			tag:      "v1.2.0",
+			message:  "Msg",
 			subjects: []string{"New"},
-			want:     "# Changelog\n\n## v1.2.0 - 2026-11-11\n\n- New\n\n## v1.2.0-rc.1 - 2026-10-01\n\n- Old\n",
+			want:     "# Changelog\n\n## v1.2.0 - 2026-11-11\n\nMsg\n\n- New\n\n## v1.2.0-rc.1 - 2026-10-01\n\n- Old\n",
 		},
 		{
 			name:     "stable section does not block a prerelease tag",
 			content:  "# Changelog\n\n## v1.2.0 - 2026-10-01\n\n- Old\n",
 			tag:      "v1.2.0-rc.1",
+			message:  "Msg",
 			subjects: []string{"New"},
-			want:     "# Changelog\n\n## v1.2.0-rc.1 - 2026-11-11\n\n- New\n\n## v1.2.0 - 2026-10-01\n\n- Old\n",
+			want:     "# Changelog\n\n## v1.2.0-rc.1 - 2026-11-11\n\nMsg\n\n- New\n\n## v1.2.0 - 2026-10-01\n\n- Old\n",
+		},
+		{
+			name:    "message without subjects makes a message-only section",
+			tag:     "v0.0.1",
+			message: "First release.",
+			want:    "# Changelog\n\n## v0.0.1 - 2026-11-11\n\nFirst release.\n",
+		},
+		{
+			name:     "multi-line message is kept and trimmed",
+			content:  "# Changelog\n\n## v1.0.0 - 2026-10-01\n\nOld\n",
+			tag:      "v1.1.0",
+			message:  "\n  Line one.\n\nLine two.\n\n",
+			subjects: []string{"New"},
+			want:     "# Changelog\n\n## v1.1.0 - 2026-11-11\n\nLine one.\n\nLine two.\n\n- New\n\n## v1.0.0 - 2026-10-01\n\nOld\n",
+		},
+		{name: "empty message is refused", tag: "v1.0.0", message: "", subjects: []string{"New"}, wantErr: true},
+		{name: "blank message is refused", tag: "v1.0.0", message: " \n\t\n", subjects: []string{"New"}, wantErr: true},
+		{name: "heading line in the message is refused", tag: "v1.0.0", message: "Intro\n## Sneaky\nmore", subjects: []string{"New"}, wantErr: true},
+		{
+			name:     "deeper heading in the message is allowed",
+			tag:      "v1.0.0",
+			message:  "### Highlights",
+			subjects: []string{"New"},
+			want:     "# Changelog\n\n## v1.0.0 - 2026-11-11\n\n### Highlights\n\n- New\n",
 		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := changelog.Prepend([]byte(tc.content), tc.tag, "2026-11-11", tc.subjects)
+			got, err := changelog.Prepend([]byte(tc.content), tc.tag, "2026-11-11", tc.message, tc.subjects)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Prepend() = %q, want error", got)

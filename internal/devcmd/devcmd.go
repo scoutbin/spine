@@ -39,7 +39,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root := &cli.Root{
 		Command:  cli.Command{Name: "spine", Summary: "Development tool for projects built on spine"},
 		Globals:  []cli.Flag{{Name: "manifest", Kind: cli.KindString, Default: "spine.json", Help: "Path to the manifest"}},
-		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand(), distTagsCommand(stdout), changelogCommand(stdout), notesCommand(stdout)},
+		Commands: []*cli.Command{manifestCommand(stdout), classifyCommand(stdout), distCommand(), genCommand(), packageCommand(), distTagsCommand(stdout), changeCommand(stdout), notesCommand(stdout)},
 	}
 	return root.Execute(args, nil, stdout, stderr)
 }
@@ -221,40 +221,90 @@ func distTagsCommand(stdout io.Writer) *cli.Command {
 	}
 }
 
-func changelogCommand(stdout io.Writer) *cli.Command {
+// preTracks are the values of the change command's --pre flag.
+var preTracks = map[string]release.Track{"alpha": release.Alpha, "beta": release.Beta, "rc": release.RC}
+
+func changeCommand(stdout io.Writer) *cli.Command {
 	return &cli.Command{
-		Name:    "changelog",
-		Summary: "Add a section for a release tag to CHANGELOG.md from the commits since the previous release, and print the base and commit count as key=value lines",
-		Args:    []cli.Arg{{Name: "tag", Required: true, Help: "Release tag such as v1.2.3 or v1.2.3-rc.1"}},
+		Name:    "change",
+		Summary: "Add a CHANGELOG.md section for the next release, commit it as \"release <tag>\", tag the commit and print the tag, base, commit count and push command as key=value lines. Nothing is fetched or pushed",
+		Args: []cli.Arg{
+			{Name: "bump", Required: true, Help: "Part of the last stable version to raise: major, minor or patch. A prerelease of that version is promoted to stable by the same bump"},
+			{Name: "message", Required: true, Help: "Text for the top of the section; it must not be empty or have a line starting with \"## \", and must not start with -"},
+		},
+		Flags: []cli.Flag{
+			{Name: "pre", Kind: cli.KindString, Help: "Release a prerelease of the bumped version: alpha, beta or rc"},
+		},
 		Run: func(ctx *cli.Context) error {
-			tag := ctx.Arg("tag")
-			if _, err := release.ValidatePushedTag(tag); err != nil {
+			track := release.Stable
+			if pre := ctx.String("pre"); pre != "" {
+				var ok bool
+				if track, ok = preTracks[pre]; !ok {
+					return fmt.Errorf("invalid --pre %q: want alpha, beta or rc", pre)
+				}
+			}
+			branch, err := changelog.Branch()
+			if err != nil {
 				return err
 			}
-			current, err := os.ReadFile(changelogFile)
-			if err != nil && !os.IsNotExist(err) {
+			if branch == "" {
+				return errors.New("HEAD is not on a branch: check one out first")
+			}
+			clean, err := changelog.TrackedClean()
+			if err != nil {
 				return err
+			}
+			if !clean {
+				return errors.New("tracked files have uncommitted changes: commit or stash them first")
 			}
 			tags, err := changelog.MergedTags()
 			if err != nil {
 				return err
 			}
-			base, _ := release.PreviousTag(tag, tags)
-			subjects, err := changelog.Subjects(base)
+			tag, err := release.NextTag(tags, ctx.Arg("bump"), track)
 			if err != nil {
 				return err
 			}
-			if len(subjects) == 0 {
-				return fmt.Errorf("no commits to list for %s since %q", tag, base)
+			exists, err := changelog.TagExists(tag)
+			if err != nil {
+				return err
 			}
-			updated, err := changelog.Prepend(current, tag, time.Now().Format(time.DateOnly), subjects)
+			if exists {
+				return fmt.Errorf("tag %s already exists", tag)
+			}
+			base, _ := release.PreviousTag(tag, tags)
+			var subjects []string
+			if base != "" {
+				if subjects, err = changelog.Subjects(base, changelogFile); err != nil {
+					return err
+				}
+				if len(subjects) == 0 {
+					return fmt.Errorf("no commits to list for %s since %s", tag, base)
+				}
+			}
+			current, err := os.ReadFile(changelogFile)
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			updated, err := changelog.Prepend(current, tag, time.Now().Format(time.DateOnly), ctx.Arg("message"), subjects)
 			if err != nil {
 				return err
 			}
 			if err := os.WriteFile(changelogFile, updated, 0o644); err != nil {
 				return err
 			}
-			return printPairs(stdout, "base", base, "commits", fmt.Sprint(len(subjects)))
+			if err := changelog.Commit(changelogFile, "release "+tag); err != nil {
+				return fmt.Errorf("%s is written and staged but not committed: %w", changelogFile, err)
+			}
+			if err := changelog.Tag(tag); err != nil {
+				return fmt.Errorf("the release commit exists but %s is not tagged: %w", tag, err)
+			}
+			return printPairs(stdout,
+				"tag", tag,
+				"base", base,
+				"commits", fmt.Sprint(len(subjects)),
+				"push", "git push --atomic origin "+branch+" "+tag,
+			)
 		},
 	}
 }
@@ -271,14 +321,14 @@ func notesCommand(stdout io.Writer) *cli.Command {
 			}
 			content, err := os.ReadFile(changelogFile)
 			if os.IsNotExist(err) {
-				return fmt.Errorf("%s not found: run go tool spine changelog %s", changelogFile, tag)
+				return fmt.Errorf("%s not found: run go tool spine change", changelogFile)
 			}
 			if err != nil {
 				return err
 			}
 			notes, ok := changelog.Section(content, tag)
 			if !ok {
-				return fmt.Errorf("%s has no section for %s: run go tool spine changelog %s", changelogFile, tag, tag)
+				return fmt.Errorf("%s has no section for %s: run go tool spine change", changelogFile, tag)
 			}
 			_, err = io.WriteString(stdout, notes+"\n")
 			return err

@@ -1,11 +1,14 @@
-// Package changelog reads and writes CHANGELOG.md and lists the git history a
-// release section is drafted from.
+// Package changelog reads and writes CHANGELOG.md, lists the git history a
+// release section is drafted from, and runs the git operations that commit the
+// section and tag the release.
 package changelog
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -15,15 +18,28 @@ const (
 )
 
 // Prepend adds a section for tag above the newest existing section of content,
-// or at the end when there is none. Empty content yields a new titled file.
-func Prepend(content []byte, tag, date string, subjects []string) ([]byte, error) {
+// or at the end when there is none. Empty content yields a new titled file. The
+// section is the trimmed message followed by one line per subject, if any. The
+// message must not be empty and must not contain a heading line, which would end
+// the section early.
+func Prepend(content []byte, tag, date, message string, subjects []string) ([]byte, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil, errors.New("the message is empty")
+	}
+	if slices.ContainsFunc(strings.Split(message, "\n"), isHeading) {
+		return nil, fmt.Errorf("the message must not have a line starting with %q", headingPrefix)
+	}
 	lines := strings.Split(string(content), "\n")
 	if _, found := findSection(lines, tag); found {
 		return nil, fmt.Errorf("CHANGELOG.md already has a section for %s", tag)
 	}
 
 	var section strings.Builder
-	fmt.Fprintf(&section, "%s%s - %s\n\n", headingPrefix, tag, date)
+	fmt.Fprintf(&section, "%s%s - %s\n\n%s\n", headingPrefix, tag, date, message)
+	if len(subjects) > 0 {
+		section.WriteString("\n")
+	}
 	for _, subject := range subjects {
 		fmt.Fprintf(&section, "- %s\n", subject)
 	}
@@ -65,13 +81,54 @@ func MergedTags() ([]string, error) {
 }
 
 // Subjects returns the subjects of the non-merge commits in base..HEAD, newest
-// first. An empty base lists every commit reachable from HEAD.
-func Subjects(base string) ([]string, error) {
+// first, leaving out commits that change nothing but file. An empty base lists
+// every commit reachable from HEAD.
+func Subjects(base, file string) ([]string, error) {
 	revisions := "HEAD"
 	if base != "" {
 		revisions = base + "..HEAD"
 	}
-	return gitLines("log", "--no-merges", "--no-show-signature", "--encoding=UTF-8", "--format=%s", revisions, "--")
+	// --full-history keeps commits that came in through a merge, which the
+	// default history simplification can prune once a path limit is given.
+	return gitLines("log", "--no-merges", "--full-history", "--no-show-signature", "--encoding=UTF-8", "--format=%s", revisions, "--", ".", ":(exclude)"+file)
+}
+
+// Branch returns the branch HEAD is on, or "" when HEAD is detached.
+func Branch() (string, error) {
+	lines, err := gitLines("branch", "--show-current")
+	if err != nil || len(lines) == 0 {
+		return "", err
+	}
+	return lines[0], nil
+}
+
+// TrackedClean reports whether no tracked file has staged or unstaged changes.
+// Untracked files are ignored.
+func TrackedClean() (bool, error) {
+	lines, err := gitLines("status", "--porcelain", "--untracked-files=no")
+	return len(lines) == 0, err
+}
+
+// TagExists reports whether a local tag named tag exists, reachable or not.
+func TagExists(tag string) (bool, error) {
+	lines, err := gitLines("tag", "--list", tag)
+	return len(lines) > 0, err
+}
+
+// Commit commits file, and nothing else, with subject. The user's git config
+// applies, including hooks and signing.
+func Commit(file, subject string) error {
+	if _, err := gitLines("add", "--", file); err != nil {
+		return err
+	}
+	_, err := gitLines("commit", "--only", "--message", subject, "--", file)
+	return err
+}
+
+// Tag creates a lightweight tag on HEAD.
+func Tag(tag string) error {
+	_, err := gitLines("tag", tag)
+	return err
 }
 
 func isHeading(line string) bool {
