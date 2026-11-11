@@ -146,7 +146,7 @@ func packageCommand() *cli.Command {
 			{Name: "tag", Kind: cli.KindString, Help: "Release tag such as v1.2.3"},
 			{Name: "dist", Kind: cli.KindString, Default: "dist", Help: "Directory holding the checksums.txt written by dist"},
 			{Name: "out", Kind: cli.KindString, Default: "dist/packages", Help: "Directory to write the package directory to"},
-			{Name: "base-url", Kind: cli.KindString, Help: "Download the release archives from this directory URL instead of GitHub (tests only)"},
+			{Name: "base-url", Kind: cli.KindString, Help: "Download the release archives from this directory URL instead of GitHub (tests only). The directory is flat and holds the assets of a single tag"},
 		},
 		Run: func(ctx *cli.Context) error {
 			channel := ctx.Arg("channel")

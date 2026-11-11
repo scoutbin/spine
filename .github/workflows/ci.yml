@@ -1,0 +1,993 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MANIFEST: internal/example/spine.json
+  # Stable, because Homebrew rejects pre-release versions.
+  CI_TAG: v0.0.0
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gofmt
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test ./...
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      # sha256 of actionlint_<version>_linux_amd64.tar.gz from the checksums file of that release.
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: |
+          dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$dir"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$dir/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $archive" | (cd "$dir" && sha256sum -c -)
+          tar -xzf "$dir/$archive" -C "$dir" actionlint
+          echo "$dir" >> "$GITHUB_PATH"
+      # Uses the shellcheck preinstalled on the ubuntu-24.04 image.
+      - run: actionlint -color
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Build the release archives
+        run: |
+          go run ./cmd/spine --manifest "$MANIFEST" dist --package ./internal/example --version "$CI_TAG"
+          cd dist
+          sha256sum -c checksums.txt
+          # One archive per release target: 3 OS x 2 arch.
+          test "$(wc -l < checksums.txt)" -eq 6
+      - name: Render the generated files
+        run: |
+          # The second run checks that gen output is deterministic.
+          go run ./cmd/spine --manifest "$MANIFEST" gen --out generated
+          go run ./cmd/spine --manifest "$MANIFEST" gen --out generated --check
+      - name: Render the packages
+        run: |
+          go run ./cmd/spine --manifest "$MANIFEST" package npm --tag "$CI_TAG" --dist dist --out packages
+          go run ./cmd/spine --manifest "$MANIFEST" package homebrew --tag "$CI_TAG" --dist dist --out packages --base-url "file://$PWD/dist"
+      - name: A rejected tag fails and renders no package
+        run: |
+          if go run ./cmd/spine --manifest "$MANIFEST" package npm --tag bogus --dist dist --out "$RUNNER_TEMP/rejected"; then
+            echo "::error::package npm accepted the tag bogus"
+            exit 1
+          fi
+          if [ -e "$RUNNER_TEMP/rejected" ]; then
+            echo "::error::a rejected tag left a package behind"
+            exit 1
+          fi
+      - name: shellcheck install.sh
+        run: shellcheck generated/install.sh
+      - name: sh, node, ruby and YAML syntax
+        run: |
+          sh -n generated/install.sh
+          node --check packages/npm/install.js
+          node --check packages/npm/launcher.js
+          ruby -c packages/homebrew/example.rb
+          ruby -ryaml -e 'YAML.load_file(ARGV.fetch(0))' generated/action.yml
+      - name: install.ps1 parses
+        env:
+          SCRIPT: generated/install.ps1
+        run: |
+          pwsh -NoProfile -Command '
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:SCRIPT).Path, [ref]$null, [ref]$errors) | Out-Null
+            foreach ($e in $errors) { Write-Host "::error::$($e.Message)" }
+            if ($errors.Count -gt 0) { exit 1 }
+          '
+      - name: Pack the npm package
+        run: |
+          mkdir pack
+          tarball=$(npm pack ./packages/npm --pack-destination pack --silent)
+          want=$(printf 'package/%s\n' install.js launcher.js package.json)
+          got=$(tar -tzf "pack/$tarball" | LC_ALL=C sort)
+          if [ "$got" != "$want" ]; then
+            echo "::error::The tarball holds the wrong files:"
+            echo "$got"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: generated
+          path: generated/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-tarball
+          path: pack/
+          if-no-files-found: error
+          retention-days: 7
+
+  # The formula points at the local archives.
+  homebrew:
+    name: homebrew (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    defaults:
+      run:
+        shell: bash
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Install from a local tap
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          if ! command -v brew >/dev/null 2>&1; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
+
+          go run ./cmd/spine --manifest "$MANIFEST" package homebrew --tag "$CI_TAG" --dist dist --out packages --base-url "file://$PWD/dist"
+
+          brew tap-new --no-git local/example
+          cp packages/homebrew/example.rb "$(brew --repository local/example)/Formula/example.rb"
+          brew install local/example/example
+
+          line=$("$(brew --prefix)/bin/example" --version)
+          echo "$line"
+          case "$line" in
+            "example $CI_TAG (commit "*) ;;
+            *) fail "example printed an unexpected version line" ;;
+          esac
+
+          info=$("$(brew --prefix)/bin/example" info --json)
+          echo "$info"
+          case "$info" in
+            *'"channel":"homebrew"'*) ;;
+            *) fail "info --json did not report channel homebrew" ;;
+          esac
+          case "$info" in
+            *'"version":"'"$CI_TAG"'"'*) ;;
+            *) fail "info --json did not report version $CI_TAG" ;;
+          esac
+
+          upgrade=$("$(brew --prefix)/bin/example" upgrade)
+          echo "$upgrade"
+          printf '%s\n' "$upgrade" | grep -qxF "  brew upgrade scoutbin/tap/example" ||
+            fail "upgrade did not print the brew upgrade command"
+
+          brew test example
+
+  install-sh:
+    name: install.sh (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXAMPLE_DOWNLOAD_BASE_URL: file://${{ github.workspace }}/mirror
+      # Keeps the other steps from editing the runner's shell profiles. The profile step unsets it.
+      EXAMPLE_NO_MODIFY_PATH: 1
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: generated
+          path: generated
+      - name: Stage release mirror
+        run: |
+          mkdir -p "mirror/$CI_TAG"
+          cp dist/* "mirror/$CI_TAG/"
+      - name: Install and info
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          case "$(uname -m)" in
+            x86_64) host_arch=amd64 ;;
+            aarch64 | arm64) host_arch=arm64 ;;
+            *) fail "unexpected architecture $(uname -m)" ;;
+          esac
+
+          dir="$RUNNER_TEMP/ok"
+          tmpdir="$RUNNER_TEMP/tmp-ok"
+          mkdir -p "$tmpdir"
+          TMPDIR="$tmpdir" EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh generated/install.sh 2>"$RUNNER_TEMP/ok.err"
+          cat "$RUNNER_TEMP/ok.err"
+          grep -qF "warning: EXAMPLE_DOWNLOAD_BASE_URL is set" "$RUNNER_TEMP/ok.err" || fail "the mirror override did not warn"
+          [ -z "$(ls -A "$tmpdir")" ] || fail "a successful install left temporary files behind"
+          real=$(cd "$dir" && pwd -P)
+          line=$("$dir/example" --version)
+          echo "$line"
+          case "$line" in
+            "example $CI_TAG (commit "*", built "*", $host_os/$host_arch)") ;;
+            *) fail "example printed an unexpected version line" ;;
+          esac
+          [ "$("$dir/example" info --json)" = "{\"path\":\"$real/example\",\"channel\":\"install.sh\",\"version\":\"$CI_TAG\"}" ] ||
+            fail "info --json did not report channel install.sh and the resolved path"
+      - name: Default directory, EXAMPLE_VERSION and EXAMPLE_INSTALL_DIR are honored
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+
+          mkdir -p "$RUNNER_TEMP/home"
+          HOME="$RUNNER_TEMP/home" EXAMPLE_VERSION="$CI_TAG" sh generated/install.sh
+          [ -x "$RUNNER_TEMP/home/.local/bin/example" ] || fail "default directory ~/.local/bin was not used"
+
+          if EXAMPLE_VERSION=v9.9.9 EXAMPLE_INSTALL_DIR="$RUNNER_TEMP/pinned" sh generated/install.sh 2>"$RUNNER_TEMP/pinned.err"; then
+            fail "an unknown EXAMPLE_VERSION installed"
+          fi
+          grep -qF v9.9.9 "$RUNNER_TEMP/pinned.err" || fail "EXAMPLE_VERSION was not the tag that was requested"
+          [ ! -e "$RUNNER_TEMP/pinned" ] || fail "a failed install created its directory"
+
+          if sh generated/install.sh 2>"$RUNNER_TEMP/unpinned.err"; then
+            fail "install.sh ran against a mirror without EXAMPLE_VERSION"
+          fi
+          grep -qF "EXAMPLE_VERSION is required" "$RUNNER_TEMP/unpinned.err" || fail "missing EXAMPLE_VERSION message"
+      - name: Bad checksums abort and leave the target untouched
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          case "$(uname -m)" in
+            x86_64) host_arch=amd64 ;;
+            aarch64 | arm64) host_arch=arm64 ;;
+            *) fail "unexpected architecture $(uname -m)" ;;
+          esac
+          archive="example_${CI_TAG#v}_${host_os}_${host_arch}.tar.gz"
+
+          for testcase in mismatch missing malformed; do
+            mirror="$RUNNER_TEMP/bad-$testcase"
+            mkdir -p "$mirror/$CI_TAG"
+            cp dist/* "$mirror/$CI_TAG/"
+            case "$testcase" in
+              mismatch)
+                awk -v a="$archive" '$2 == a { $1 = sprintf("%064d", 0) } { print $1 "  " $2 }' dist/checksums.txt >"$mirror/$CI_TAG/checksums.txt"
+                want="checksum mismatch"
+                ;;
+              missing)
+                grep -vF "$archive" dist/checksums.txt >"$mirror/$CI_TAG/checksums.txt"
+                want="no line for $archive"
+                ;;
+              malformed)
+                awk -v a="$archive" '$2 == a { $1 = substr($1, 1, 63) } { print $1 "  " $2 }' dist/checksums.txt >"$mirror/$CI_TAG/checksums.txt"
+                want="malformed line for $archive"
+                ;;
+            esac
+
+            dir="$RUNNER_TEMP/target-$testcase"
+            tmpdir="$RUNNER_TEMP/tmp-$testcase"
+            mkdir -p "$dir" "$tmpdir"
+            echo old >"$dir/example"
+            if TMPDIR="$tmpdir" EXAMPLE_DOWNLOAD_BASE_URL="file://$mirror" EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh generated/install.sh 2>"$dir.err"; then
+              fail "$testcase: install succeeded"
+            fi
+            cat "$dir.err"
+            grep -qF "$want" "$dir.err" || fail "$testcase: unexpected error message"
+            [ "$(cat "$dir/example")" = old ] || fail "$testcase: existing example was modified"
+            [ "$(ls -A "$dir")" = example ] || fail "$testcase: install left files behind"
+            [ -z "$(ls -A "$tmpdir")" ] || fail "$testcase: a failed install left temporary files behind"
+          done
+
+          mirror="$RUNNER_TEMP/bad-crlf"
+          mkdir -p "$mirror/$CI_TAG"
+          cp dist/* "$mirror/$CI_TAG/"
+          awk '{ printf "%s\r\n", $0 }' dist/checksums.txt >"$mirror/$CI_TAG/checksums.txt"
+          dir="$RUNNER_TEMP/target-crlf"
+          tmpdir="$RUNNER_TEMP/tmp-crlf"
+          mkdir -p "$tmpdir"
+          TMPDIR="$tmpdir" EXAMPLE_DOWNLOAD_BASE_URL="file://$mirror" EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh generated/install.sh ||
+            fail "crlf: install with CRLF checksums failed"
+          [ -x "$dir/example" ] || fail "crlf: example was not installed"
+          [ -z "$(ls -A "$tmpdir")" ] || fail "crlf: a successful install left temporary files behind"
+      - name: Package-manager directories are refused
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          refused() {
+            if EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$1" sh generated/install.sh 2>"$RUNNER_TEMP/refused.err"; then
+              fail "$1 was not refused"
+            fi
+            grep -qF "refusing to install" "$RUNNER_TEMP/refused.err" || fail "$1: unexpected error message"
+          }
+
+          for segment in Cellar Caskroom node_modules chocolatey CELLAR NODE_MODULES; do
+            refused "$RUNNER_TEMP/managed/$segment/example/bin"
+          done
+          [ ! -e "$RUNNER_TEMP/managed" ] || fail "a refused install created directories"
+
+          mkdir -p "$RUNNER_TEMP/real/node_modules/bin"
+          ln -s "$RUNNER_TEMP/real/node_modules/bin" "$RUNNER_TEMP/via-link"
+          refused "$RUNNER_TEMP/via-link"
+          [ -z "$(ls -A "$RUNNER_TEMP/real/node_modules/bin")" ] || fail "a refused install wrote through a symlinked directory"
+
+          mkdir -p "$RUNNER_TEMP/linked/bin"
+          ln -s ../Cellar/example/0.0.0/bin/example "$RUNNER_TEMP/linked/bin/example"
+          refused "$RUNNER_TEMP/linked/bin"
+          [ "$(readlink "$RUNNER_TEMP/linked/bin/example")" = ../Cellar/example/0.0.0/bin/example ] || fail "a refused install changed the symlink"
+      - name: A directory at the install path is refused
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          target="$RUNNER_TEMP/dir-target"
+          mkdir -p "$target"
+          for kind in directory symlink; do
+            dir="$RUNNER_TEMP/dir-$kind"
+            mkdir -p "$dir"
+            case "$kind" in
+              directory) mkdir "$dir/example" ;;
+              symlink) ln -s "$target" "$dir/example" ;;
+            esac
+            if EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh generated/install.sh 2>"$RUNNER_TEMP/dir.err"; then
+              fail "$kind: install replaced a directory"
+            fi
+            cat "$RUNNER_TEMP/dir.err"
+            grep -qF "is a directory or a symlink to one" "$RUNNER_TEMP/dir.err" || fail "$kind: unexpected error message"
+            [ "$(ls -A "$dir")" = example ] || fail "$kind: install left files behind"
+            [ -z "$(ls -A "$target")" ] || fail "$kind: the install wrote into the directory"
+          done
+      - name: Windows shells are refused
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/fakebin"
+          printf '#!/bin/sh\necho MINGW64_NT-10.0\n' >"$RUNNER_TEMP/fakebin/uname"
+          chmod +x "$RUNNER_TEMP/fakebin/uname"
+          if PATH="$RUNNER_TEMP/fakebin:$PATH" EXAMPLE_VERSION="$CI_TAG" sh generated/install.sh 2>"$RUNNER_TEMP/msys.err"; then
+            fail "install.sh ran in a Windows shell"
+          fi
+          grep -qF install.ps1 "$RUNNER_TEMP/msys.err" || fail "the refusal does not point at install.ps1"
+          grep -qF npm "$RUNNER_TEMP/msys.err" || fail "the refusal does not point at npm"
+      - name: Piped install reads the script from stdin
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          dir="$RUNNER_TEMP/piped"
+          cat generated/install.sh | EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh
+          case "$("$dir/example" --version)" in
+            "example $CI_TAG (commit "*) ;;
+            *) fail "piped install produced an unexpected version line" ;;
+          esac
+      - name: PATH hint and shadow warning
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          dir="$RUNNER_TEMP/path-dir"
+          early="$RUNNER_TEMP/path-early"
+          linked="$RUNNER_TEMP/path-linked"
+          mkdir -p "$early" "$linked"
+          printf '#!/bin/sh\n' >"$early/example"
+          chmod +x "$early/example"
+
+          run_install() {
+            EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh generated/install.sh 2>"$RUNNER_TEMP/path.err"
+            cat "$RUNNER_TEMP/path.err"
+          }
+
+          run_install
+          grep -qF "is not on your PATH" "$RUNNER_TEMP/path.err" || fail "missing the PATH hint"
+          ! grep -qF "will shadow" "$RUNNER_TEMP/path.err" || fail "shadow warning without the directory on PATH"
+
+          PATH="$early:$PATH" run_install
+          grep -qF "is not on your PATH" "$RUNNER_TEMP/path.err" || fail "missing the PATH hint with an earlier example"
+          ! grep -qF "will shadow" "$RUNNER_TEMP/path.err" || fail "shadow warning without the directory on PATH"
+
+          PATH="$early:$dir:$PATH" run_install
+          grep -qF "will shadow" "$RUNNER_TEMP/path.err" || fail "missing the shadow warning"
+          ! grep -qF "is not on your PATH" "$RUNNER_TEMP/path.err" || fail "PATH hint with the directory on PATH"
+
+          ln -s "$dir/example" "$linked/example"
+          PATH="$linked:$dir:$PATH" run_install
+          ! grep -qF "will shadow" "$RUNNER_TEMP/path.err" || fail "shadow warning for a symlink to the installed example"
+      - name: Install zsh and fish to check the profile lines
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          for attempt in 1 2 3; do
+            sudo apt-get update && sudo apt-get install -y zsh fish && exit 0
+            echo "apt-get failed (attempt $attempt)."
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not install zsh and fish."
+          exit 1
+      - name: Install directory is added to the shell profile
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          unset EXAMPLE_NO_MODIFY_PATH ZDOTDIR XDG_CONFIG_HOME
+          marker="# added by example install.sh"
+
+          install_in() {
+            home=$1
+            shift
+            rc=0
+            env HOME="$home" EXAMPLE_VERSION="$CI_TAG" "$@" sh generated/install.sh 2>"$RUNNER_TEMP/profile.err" </dev/null || rc=$?
+            cat "$RUNNER_TEMP/profile.err"
+            return "$rc"
+          }
+          files_in() { find "$1" -type f | sort; }
+
+          # setup: none, nonl (profile exists without a final newline), symlink (profile is a
+          # symlink), zdotdir, xdg, or pre:<file> (that file exists first). On bash, expected is
+          # bash:<file macOS writes>; Linux always writes .bashrc.
+          while IFS='|' read -r shell runner subdir setup expected; do
+            home=$(mktemp -d "$RUNNER_TEMP/profile-home.XXXXXX")
+            dir="$RUNNER_TEMP/profile dirs/$subdir"
+            label="SHELL=$shell dir=$subdir setup=$setup"
+            case $expected in
+              bash:*) if [ "$(uname -s)" = Darwin ]; then expected=${expected#bash:}; else expected=.bashrc; fi ;;
+            esac
+            file="$home/$expected"
+            content=$file
+            premade=
+            zdotdir=
+            xdg=
+            case $setup in
+              zdotdir) zdotdir="$home/zdot" ;;
+              xdg) xdg="$home/xdg" ;;
+              nonl)
+                premade=$file
+                printf '# mine' >"$file"
+                ;;
+              symlink)
+                content="$home/real-profile"
+                premade=$content
+                printf '# mine\n' >"$content"
+                ln -s "$content" "$file"
+                ;;
+              pre:*)
+                premade="$home/${setup#pre:}"
+                printf '# mine\n' >"$premade"
+                ;;
+            esac
+            before=$(files_in "$home")
+
+            run_case() { install_in "$home" SHELL="$shell" ZDOTDIR="$zdotdir" XDG_CONFIG_HOME="$xdg" EXAMPLE_INSTALL_DIR="$dir"; }
+            run_case || fail "$label: install failed"
+            [ "$(files_in "$home")" = "$(printf '%s\n%s\n' "$before" "$content" | grep . | sort -u)" ] || fail "$label: expected only $content to be added"
+            [ "$setup" != symlink ] || [ -L "$file" ] || fail "$label: the symlinked profile was replaced"
+            [ "$premade" != "$content" ] || [ "$(head -n 1 "$content")" = "# mine" ] || fail "$label: the existing profile content was not preserved"
+            grep -qF "Added $dir to your PATH in $file" "$RUNNER_TEMP/profile.err" || fail "$label: missing the changed-file message"
+            grep -qF "Open a new terminal" "$RUNNER_TEMP/profile.err" || fail "$label: missing the use-it-now message"
+            ! grep -qF "is not on your PATH" "$RUNNER_TEMP/profile.err" || fail "$label: printed the hint after editing the profile"
+
+            run_case || fail "$label: second install failed"
+            [ "$(grep -cxF "$marker" "$content")" -eq 1 ] || fail "$label: the marker is not there exactly once"
+            [ "$(grep -cF "$dir" "$content")" -eq 1 ] || fail "$label: the directory is not there exactly once"
+            grep -qF "already adds $dir" "$RUNNER_TEMP/profile.err" || fail "$label: missing the already-added message"
+
+            if command -v "$runner" >/dev/null 2>&1; then
+              case $runner in
+                fish) got=$(F="$file" fish -c 'source $F; string join : $PATH') ;;
+                *) got=$(F="$file" "$runner" -c '. "$F"; printf %s "$PATH"') ;;
+              esac
+              case ":$got:" in
+                *":$dir:"*) ;;
+                *) fail "$label: sourcing $file in $runner did not put the directory on PATH" ;;
+              esac
+            elif [ "$runner" = fish ] && [ "$(uname -s)" = Darwin ]; then
+              echo "fish is not installed, skipped sourcing $file"
+            else
+              fail "$label: $runner is not installed"
+            fi
+          done <<'EOF'
+          /bin/zsh|zsh|bin|none|.zshrc
+          /bin/zsh|zsh|with space/bin|none|.zshrc
+          zsh|zsh|bin|none|.zshrc
+          /bin/zsh|zsh|bin|nonl|.zshrc
+          /bin/zsh|zsh|bin|symlink|.zshrc
+          /bin/zsh|zsh|bin|zdotdir|zdot/.zshrc
+          /bin/bash|bash|bin|none|bash:.bash_profile
+          /bin/bash|bash|with space/bin|none|bash:.bash_profile
+          bash|bash|bin|none|bash:.bash_profile
+          /bin/bash|bash|bin|pre:.profile|bash:.profile
+          /bin/bash|bash|bin|pre:.bash_login|bash:.bash_login
+          /usr/bin/fish|fish|bin|none|.config/fish/conf.d/example.fish
+          /usr/bin/fish|fish|with space/bin|none|.config/fish/conf.d/example.fish
+          /usr/bin/fish|fish|bin|xdg|xdg/fish/conf.d/example.fish
+          /bin/sh|sh|bin|none|.profile
+          /bin/sh|sh|with space/bin|none|.profile
+          /bin/dash|sh|bin|none|.profile
+          |sh|bin|none|.profile
+          EOF
+
+          # No profile edit: shells without a rule, a quote in the directory, directory already on PATH.
+          while IFS='|' read -r shell subdir pathmode hint; do
+            home=$(mktemp -d "$RUNNER_TEMP/profile-home.XXXXXX")
+            dir="$RUNNER_TEMP/profile dirs/$subdir"
+            label="SHELL=$shell dir=$subdir path=$pathmode"
+            case $pathmode in
+              exact) path="$dir:$PATH" ;;
+              slash) path="$dir/:$PATH" ;;
+              *) path=$PATH ;;
+            esac
+            install_in "$home" SHELL="$shell" EXAMPLE_INSTALL_DIR="$dir" PATH="$path" || fail "$label: install failed"
+            [ -z "$(files_in "$home")" ] || fail "$label: a profile was written"
+            ! grep -qF "Added" "$RUNNER_TEMP/profile.err" || fail "$label: reported a profile edit"
+            if [ "$hint" = yes ]; then
+              grep -qF "$dir is not on your PATH" "$RUNNER_TEMP/profile.err" || fail "$label: missing the PATH hint"
+            else
+              ! grep -qF "is not on your PATH" "$RUNNER_TEMP/profile.err" || fail "$label: printed the PATH hint"
+            fi
+          done <<'EOF'
+          /bin/tcsh|bin|none|yes
+          /usr/bin/nu|bin|none|yes
+          /bin/zsh|it's/bin|none|yes
+          /bin/zsh|bin|exact|no
+          /bin/zsh|bin|slash|no
+          EOF
+
+          home=$(mktemp -d "$RUNNER_TEMP/profile-home.XXXXXX")
+          dir="$RUNNER_TEMP/profile-optout"
+          install_in "$home" SHELL=/bin/zsh EXAMPLE_INSTALL_DIR="$dir" EXAMPLE_NO_MODIFY_PATH=1 || fail "opt-out: install failed"
+          [ -z "$(files_in "$home")" ] || fail "opt-out: a profile was written"
+          grep -qF "$dir is not on your PATH" "$RUNNER_TEMP/profile.err" || fail "opt-out: missing the PATH hint"
+
+          mkdir "$home/.profile"
+          install_in "$home" SHELL=/bin/sh EXAMPLE_INSTALL_DIR="$dir" || fail "unwritable profile: the install failed"
+          grep -qF "$dir is not on your PATH" "$RUNNER_TEMP/profile.err" || fail "unwritable profile: missing the PATH hint"
+      - name: Unsupported mirror schemes are rejected
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          for url in http://example.invalid/mirror ftp://example.invalid/mirror "$RUNNER_TEMP/mirror"; do
+            dir="$RUNNER_TEMP/scheme-target"
+            if EXAMPLE_DOWNLOAD_BASE_URL="$url" EXAMPLE_VERSION="$CI_TAG" EXAMPLE_INSTALL_DIR="$dir" sh generated/install.sh 2>"$RUNNER_TEMP/scheme.err"; then
+              fail "$url was accepted as a mirror"
+            fi
+            cat "$RUNNER_TEMP/scheme.err"
+            grep -qF "must start with https:// or file://" "$RUNNER_TEMP/scheme.err" || fail "$url: unexpected error message"
+            [ ! -e "$dir" ] || fail "$url: a rejected mirror created the install directory"
+          done
+      - name: EXAMPLE_TRACK installs the newest release on the track's path
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          unset EXAMPLE_DOWNLOAD_BASE_URL
+          host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          case "$(uname -m)" in
+            x86_64) host_arch=amd64 ;;
+            aarch64 | arm64) host_arch=arm64 ;;
+            *) fail "unexpected architecture $(uname -m)" ;;
+          esac
+
+          # A stand-in for the downloader that serves the GitHub API and the release
+          # assets from fixtures, so the real URLs and the default (non-mirror) path run.
+          stub="$RUNNER_TEMP/track"
+          mkdir -p "$stub/bin"
+          cat >"$stub/bin/curl" <<'EOF'
+          #!/bin/sh
+          out=
+          url=
+          while [ $# -gt 0 ]; do
+            case $1 in
+              -o) out=$2; shift ;;
+              https://*) url=$1 ;;
+            esac
+            shift
+          done
+          echo "$url" >>"$STUB_LOG"
+          case $url in
+            https://api.github.com/repos/*/releases/latest) printf '{\n  "tag_name": "%s"\n}\n' "$STUB_LATEST" >"$out" ;;
+            https://api.github.com/repos/*/releases\?*) cp "$STUB_RELEASES" "$out" ;;
+            https://github.com/*/releases/download/*) cp "$STUB_MIRROR/${url#*/releases/download/}" "$out" ;;
+            *) echo "stub: unexpected URL $url" >&2; exit 1 ;;
+          esac
+          EOF
+          chmod +x "$stub/bin/curl"
+
+          # Every release is the CI build under another tag, so only the tag differs.
+          stage() {
+            mkdir -p "$stub/mirror/$1"
+            cp "dist/example_${CI_TAG#v}_${host_os}_${host_arch}.tar.gz" "$stub/mirror/$1/example_${1#v}_${host_os}_${host_arch}.tar.gz"
+            sed "s/example_${CI_TAG#v}_/example_${1#v}_/" dist/checksums.txt >"$stub/mirror/$1/checksums.txt"
+          }
+          for tag in v1.0.0 v1.5.0 v1.10.0 v1.2.0-rc.1 v1.3.0-beta.10 v1.4.0-alpha.2 "$CI_TAG"; do stage "$tag"; done
+
+          # tag:draft pairs. Every body holds an escaped copy of a release that must not be read.
+          write_releases() {
+            n=0
+            echo '['
+            for pair in "$@"; do
+              [ "$n" -eq 0 ] || echo ','
+              n=1
+              printf '  {\n    "tag_name": "%s",\n    "draft": %s,\n    "body": "{\\"tag_name\\": \\"v9.9.9\\", \\"draft\\": false}"\n  }' "${pair%:*}" "${pair#*:}"
+            done
+            echo
+            echo ']'
+          }
+
+          install_track() {
+            dir=$(mktemp -d "$RUNNER_TEMP/track-dir.XXXXXX")
+            : >"$stub/log"
+            env PATH="$stub/bin:$PATH" STUB_LOG="$stub/log" STUB_LATEST=v1.5.0 STUB_RELEASES="$stub/releases.json" STUB_MIRROR="$stub/mirror" \
+              EXAMPLE_INSTALL_DIR="$dir" "$@" sh generated/install.sh >"$stub/out" 2>"$stub/err" </dev/null
+          }
+
+          noise="v1.2.0-rc.0:false vfoo:false v9.9.9-ci:false"
+          while IFS='|' read -r track releases want; do
+            for layout in pretty compact crlf; do
+              # shellcheck disable=SC2086
+              write_releases $releases $noise | case $layout in
+                compact) tr -d '\n ' ;;
+                crlf) awk '{ printf "%s\r\n", $0 }' ;;
+                *) cat ;;
+              esac >"$stub/releases.json"
+              install_track EXAMPLE_TRACK="$track" || { cat "$stub/err"; fail "$track $layout: install failed"; }
+              [ "$(cat "$stub/out")" = "Installed example $want to $dir" ] || { cat "$stub/out"; fail "$track $layout: expected $want"; }
+              real=$(cd "$dir" && pwd -P)
+              [ "$("$dir/example" info --json)" = "{\"path\":\"$real/example\",\"channel\":\"install.sh\",\"version\":\"$CI_TAG\"}" ] ||
+                fail "$track $layout $want: info --json did not report channel install.sh"
+            done
+          done <<'EOF'
+          beta|v1.2.0-beta.1:false v1.2.0-rc.1:false v1.5.0:false v1.0.0:false|v1.5.0
+          beta|v1.0.0:false v1.2.0-beta.1:false v1.2.0-rc.1:false|v1.2.0-rc.1
+          beta|v1.3.0-beta.9:false v1.3.0-beta.10:false v1.3.0-beta.2:false|v1.3.0-beta.10
+          alpha|v1.4.0-alpha.1:false v1.4.0-alpha.2:false v1.3.0-beta.10:false|v1.4.0-alpha.2
+          alpha|v1.3.0-alpha.7:false v1.3.0-beta.10:false|v1.3.0-beta.10
+          rc|v1.2.0-rc.1:false v1.3.0-beta.10:false v1.2.0-alpha.4:false|v1.2.0-rc.1
+          rc|v1.2.0-rc.1:false v1.5.0:false v1.4.0-alpha.2:false|v1.5.0
+          EOF
+
+          write_releases v1.0.0:false v1.2.0-rc.1:false >"$stub/releases.json"
+          install_track || fail "the default track failed"
+          grep -qF "Installed example v1.5.0 to" "$stub/out" || fail "the default track did not use releases/latest"
+          grep -qF "/releases/latest" "$stub/log" || fail "the default track did not ask for the latest release"
+          ! grep -qF "/releases?" "$stub/log" || fail "the default track read the releases list"
+
+          install_track EXAMPLE_TRACK=beta EXAMPLE_VERSION="$CI_TAG" || fail "EXAMPLE_VERSION with EXAMPLE_TRACK failed"
+          grep -qF "Installed example $CI_TAG to" "$stub/out" || fail "EXAMPLE_VERSION did not win over EXAMPLE_TRACK"
+          ! grep -qF api.github.com "$stub/log" || fail "EXAMPLE_VERSION still queried the API"
+
+          # A draft flag that comes before its tag_name still belongs to that release.
+          printf '[{"draft":true,"tag_name":"v1.5.0"},{"draft":false,"tag_name":"v1.0.0"}]' >"$stub/releases.json"
+          install_track EXAMPLE_TRACK=beta || { cat "$stub/err"; fail "draft before tag_name: install failed"; }
+          grep -qF "Installed example v1.0.0 to" "$stub/out" || fail "a draft before its tag_name was attached to the wrong release"
+
+          write_releases v9.9.9-alpha.1:true vfoo:false >"$stub/releases.json"
+          if install_track EXAMPLE_TRACK=beta; then fail "a list with only drafts and unparseable tags installed"; fi
+          grep -qF "no release found on the beta track" "$stub/err" || fail "missing the no-release message"
+
+          if install_track EXAMPLE_TRACK=Beta; then fail "an unknown track installed"; fi
+          cat "$stub/err"
+          grep -qF "EXAMPLE_TRACK must be one of stable, alpha, beta or rc, got: Beta" "$stub/err" || fail "unexpected unknown-track message"
+
+  npm:
+    name: npm (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-tarball
+          path: npm-tarball
+      # The mirror holds the archives directly, and the package checks them against the digests it was rendered with.
+      # A file URL from Node, because file://${{ github.workspace }} is not valid with Windows paths.
+      - name: Stage release mirror
+        run: |
+          mkdir -p mirror
+          cp dist/* mirror/
+          url=$(node -p "require('node:url').pathToFileURL(require('node:path').resolve('mirror')).href")
+          echo "EXAMPLE_DOWNLOAD_BASE_URL=$url" >> "$GITHUB_ENV"
+          echo "TARBALL=./npm-tarball/scoutbin-example-${CI_TAG#v}.tgz" >> "$GITHUB_ENV"
+      - name: Install from the tarball
+        run: npm install -g --prefix "$RUNNER_TEMP/npm-global" "$TARBALL"
+      - name: Version, info, upgrade hint and exit code
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          prefix="$RUNNER_TEMP/npm-global"
+          if [ "$RUNNER_OS" = Windows ]; then PATH="$(cygpath -u "$prefix"):$PATH"; else PATH="$prefix/bin:$PATH"; fi
+          want_os=$(node -p "({ darwin: 'darwin', linux: 'linux', win32: 'windows' })[process.platform]")
+          want_arch=$(node -p "({ x64: 'amd64', arm64: 'arm64' })[process.arch]")
+
+          line=$(example --version)
+          echo "$line"
+          case "$line" in
+            "example $CI_TAG (commit "*", built "*", $want_os/$want_arch)") ;;
+            *) fail "example printed an unexpected version line" ;;
+          esac
+
+          info=$(example info --json)
+          echo "$info"
+          case "$info" in
+            *'"channel":"npm"'*) ;;
+            *) fail "info --json did not report channel npm" ;;
+          esac
+          case "$info" in
+            *node_modules*) ;;
+            *) fail "info --json did not report a path under node_modules" ;;
+          esac
+          case "$info" in
+            *'"version":"'"$CI_TAG"'"'*) ;;
+            *) fail "info --json did not report version $CI_TAG" ;;
+          esac
+
+          upgrade=$(example upgrade)
+          echo "$upgrade"
+          printf '%s\n' "$upgrade" | grep -qxF "  npm install -g @scoutbin/example@latest" ||
+            fail "upgrade did not print the npm install command"
+
+          rc=0
+          example --version >/dev/null || rc=$?
+          [ "$rc" -eq 0 ] || fail "example --version exited $rc, not 0"
+      - name: A bad checksum fails the install and leaves no binary
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          mirror="$RUNNER_TEMP/bad-mirror"
+          mkdir -p "$mirror"
+          cp dist/* "$mirror/"
+          for archive in "$mirror"/example_*; do echo tampered >>"$archive"; done
+          bad_url=$(node -p "require('node:url').pathToFileURL(process.argv[1]).href" "$mirror")
+
+          prefix="$RUNNER_TEMP/npm-tampered"
+          if EXAMPLE_DOWNLOAD_BASE_URL="$bad_url" npm install -g --prefix "$prefix" "$TARBALL" >"$RUNNER_TEMP/tampered.log" 2>&1; then
+            fail "the install succeeded with wrong checksums"
+          fi
+          cat "$RUNNER_TEMP/tampered.log"
+          grep -qF "checksum mismatch" "$RUNNER_TEMP/tampered.log" || fail "unexpected error message"
+          vendor="$(npm root -g --prefix "$prefix")/@scoutbin/example/vendor"
+          if node -e "process.exit(require('node:fs').existsSync(process.argv[1]) ? 0 : 1)" "$vendor"; then
+            fail "a failed install left $vendor behind"
+          fi
+      - name: Without install scripts the launcher prints the fix, and the fix works
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          prefix="$RUNNER_TEMP/npm-noscripts"
+          npm install -g --ignore-scripts --prefix "$prefix" "$TARBALL"
+          launcher="$(npm root -g --prefix "$prefix")/@scoutbin/example/launcher.js"
+
+          rc=0
+          out=$(node "$launcher" --version 2>&1) || rc=$?
+          echo "$out"
+          [ "$rc" -eq 2 ] || fail "the launcher exited $rc, not 2, without the binary"
+          fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
+          [ -n "$fix" ] || fail "the launcher did not print a fix command"
+          eval "$fix"
+
+          if [ "$RUNNER_OS" = Windows ]; then PATH="$(cygpath -u "$prefix"):$PATH"; else PATH="$prefix/bin:$PATH"; fi
+          case "$(example --version)" in
+            "example $CI_TAG (commit "*) ;;
+            *) fail "example did not work after the printed fix" ;;
+          esac
+
+  # pnpm 10 and later skip dependency install scripts until they are approved.
+  pnpm:
+    name: pnpm ${{ matrix.pnpm }} (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+        pnpm: ["10", "12"]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PNPM_VERSION: ${{ matrix.pnpm }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-tarball
+          path: npm-tarball
+      - name: Stage release mirror and install pnpm
+        run: |
+          mkdir -p mirror
+          cp dist/* mirror/
+          url=$(node -p "require('node:url').pathToFileURL(require('node:path').resolve('mirror')).href")
+          echo "EXAMPLE_DOWNLOAD_BASE_URL=$url" >> "$GITHUB_ENV"
+          echo "TARBALL=./npm-tarball/scoutbin-example-${CI_TAG#v}.tgz" >> "$GITHUB_ENV"
+          npm install -g "pnpm@$PNPM_VERSION"
+          pnpm --version
+      - name: pnpm skips the install script, the printed fix repairs it
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          export PNPM_HOME="$RUNNER_TEMP/pnpm-fix"
+          mkdir -p "$PNPM_HOME"
+          home=$PNPM_HOME
+          if [ "$RUNNER_OS" = Windows ]; then home=$(cygpath -u "$PNPM_HOME"); fi
+          # pnpm 10 links global bins into PNPM_HOME, later versions into PNPM_HOME/bin.
+          PATH="$home:$home/bin:$PATH"
+
+          pnpm add -g "$TARBALL" 2>&1 | tee "$RUNNER_TEMP/pnpm-add.log"
+          grep -qF "Ignored build scripts" "$RUNNER_TEMP/pnpm-add.log" || fail "pnpm did not report the skipped install script"
+
+          rc=0
+          out=$(example --version 2>&1) || rc=$?
+          echo "$out"
+          [ "$rc" -eq 2 ] || fail "the launcher exited $rc, not 2, without the binary"
+          fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
+          [ -n "$fix" ] || fail "the launcher did not print a fix command"
+          eval "$fix"
+
+          case "$(example --version)" in
+            "example $CI_TAG (commit "*) ;;
+            *) fail "example did not work after the printed fix" ;;
+          esac
+          case "$(example info --json)" in
+            *'"channel":"npm"'*) ;;
+            *) fail "info --json did not report channel npm" ;;
+          esac
+      # Runs on pnpm 12 only: approve-builds -g --all runs the script of the global install.
+      - name: pnpm approve-builds runs the install script
+        if: matrix.pnpm == '12'
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          export PNPM_HOME="$RUNNER_TEMP/pnpm-approve"
+          mkdir -p "$PNPM_HOME"
+          home=$PNPM_HOME
+          if [ "$RUNNER_OS" = Windows ]; then home=$(cygpath -u "$PNPM_HOME"); fi
+          PATH="$home:$home/bin:$PATH"
+
+          pnpm add -g "$TARBALL"
+          pnpm approve-builds -g --all
+          case "$(example --version)" in
+            "example $CI_TAG (commit "*) ;;
+            *) fail "example did not work after pnpm approve-builds" ;;
+          esac
+
+  action:
+    name: action (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: generated
+          path: generated
+      - name: Stage release mirror
+        run: |
+          mkdir -p "mirror/$CI_TAG"
+          cp dist/* "mirror/$CI_TAG/"
+          echo "EXAMPLE_DOWNLOAD_BASE_URL=file://$GITHUB_WORKSPACE/mirror" >> "$GITHUB_ENV"
+      - id: install
+        uses: ./generated
+        with:
+          version: ${{ env.CI_TAG }}
+          install-dir: action-bin
+      - name: Outputs and PATH
+        env:
+          INSTALLED_VERSION: ${{ steps.install.outputs.version }}
+          INSTALLED_PATH: ${{ steps.install.outputs.path }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [ "$INSTALLED_VERSION" = "$CI_TAG" ] || fail "the version output is '$INSTALLED_VERSION', not $CI_TAG"
+          [ "$INSTALLED_PATH" = "$GITHUB_WORKSPACE/action-bin/example" ] || fail "the path output is '$INSTALLED_PATH'"
+          [ "$(command -v example)" = "$INSTALLED_PATH" ] || fail "example is not the installed binary on PATH"
+          case "$(example --version)" in
+            "example $CI_TAG (commit "*) ;;
+            *) fail "example printed an unexpected version line" ;;
+          esac
+
+  # Covers failure paths only: a positive Windows install test needs a published release.
+  windows:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      SCRIPT: generated/install.ps1
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: generated
+          path: generated
+      - name: install.ps1 parses in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:SCRIPT).Path, [ref]$null, [ref]$errors) | Out-Null
+          foreach ($e in $errors) { Write-Host "::error::$($e.Message)" }
+          if ($errors.Count -gt 0) { exit 1 }
+      - name: install.ps1 parses in PowerShell 7
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $env:SCRIPT).Path, [ref]$null, [ref]$errors) | Out-Null
+          foreach ($e in $errors) { Write-Host "::error::$($e.Message)" }
+          if ($errors.Count -gt 0) { exit 1 }
+      - name: install.ps1 rejects an unknown track before any download
+        shell: powershell
+        env:
+          EXAMPLE_TRACK: Beta
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $env:SCRIPT 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -eq 0) { throw 'install.ps1 accepted an unknown track' }
+          if ($out -notmatch 'EXAMPLE_TRACK must be one of stable, alpha, beta or rc') { throw 'unexpected error message' }

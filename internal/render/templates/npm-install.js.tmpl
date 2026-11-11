@@ -132,6 +132,7 @@ function readZipEntry(zip, wantName) {
   throw new Error(`zip: ${wantName} not found`);
 }
 
+// The override is a flat directory holding the release assets of a single tag.
 function releaseUrl(env) {
   const base = env[BASE_URL_ENV];
   if (!base) return RELEASE_URL;

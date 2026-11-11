@@ -2,5 +2,10 @@
   "name": "example",
   "repo": "scoutbin/spine",
   "summary": "Example tool built on spine",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "channels": {
+    "homebrew": { "tap": "scoutbin/homebrew-tap" },
+    "npm": { "package": "@scoutbin/example" },
+    "action": true
+  }
 }
