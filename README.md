@@ -223,4 +223,4 @@ The GitHub Action runs the installer for the tool. It is defined in the tool rep
 - Before committing, run `gofmt -l .` (it must print nothing), `go vet ./...` and `go test ./...`.
 - Tests are black-box, in external `_test` packages under `test/`.
 - An incompatible change to the dev CLI output or the `spine.json` schema needs a new `Contract` in `internal/devcmd`, and the reusable workflows must be updated to the same value.
-- `ci.yml` runs only from `workflow_dispatch`. It covers the Go tests, actionlint, the rendered-file checks, and the installer, Homebrew, npm, pnpm and action suites against `internal/example`. Nothing runs on push.
+- `ci.yml` runs on pull requests, on pushes to `main` and from `workflow_dispatch`. It covers the Go tests, actionlint, the rendered-file checks, and the installer, Homebrew, npm, pnpm and action suites against `internal/example`.
