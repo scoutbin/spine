@@ -7,7 +7,7 @@ inputs:
   version:
     description: Release tag to install, like v0.1.1. Takes precedence over track. Default is the newest release on the track.
     required: false
-    default: ''
+    default: ""
   track:
     description: stable, alpha, beta or rc. Installs the newest release on that track's upgrade path, as install.sh does.
     required: false
@@ -15,7 +15,7 @@ inputs:
   install-dir:
     description: Directory to install into, relative to the workspace if not absolute. Default is $RUNNER_TEMP/{% .Name %}/bin.
     required: false
-    default: ''
+    default: ""
   token:
     description: GitHub token for the release lookup, to stay clear of the API rate limit. It is not used for downloads.
     required: false
@@ -62,7 +62,7 @@ runs:
         {% .EnvVar "TRACK" %}: ${{ inputs.track }}
         {% .EnvVar "INSTALL_DIR" %}: ${{ inputs.install-dir }}
         {% .EnvVar "GITHUB_TOKEN" %}: ${{ inputs.token }}
-        {% .EnvVar "NO_MODIFY_PATH" %}: '1'
+        {% .EnvVar "NO_MODIFY_PATH" %}: "1"
     - name: Install {% .Name %} (Windows)
       id: windows
       if: runner.os == 'Windows'
@@ -86,4 +86,4 @@ runs:
         {% .EnvVar "TRACK" %}: ${{ inputs.track }}
         {% .EnvVar "INSTALL_DIR" %}: ${{ inputs.install-dir }}
         {% .EnvVar "GITHUB_TOKEN" %}: ${{ inputs.token }}
-        {% .EnvVar "NO_MODIFY_PATH" %}: '1'
+        {% .EnvVar "NO_MODIFY_PATH" %}: "1"
