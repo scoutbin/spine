@@ -38,7 +38,7 @@ In scope:
 
 Out of scope:
 
-- Tools built on spine, such as pin, scout and digest. Report issues in a tool's own code, or in its release artifacts, to that tool's repository.
+- Tools built on spine, such as pin, explore and digest. Report issues in a tool's own code, or in its release artifacts, to that tool's repository.
 - Third-party dependencies. Report them to the upstream project.
 - Vulnerabilities in GitHub, npm, Homebrew or other platforms. Report them to the platform.
 

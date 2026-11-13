@@ -159,6 +159,38 @@ func TestNpmTracks(t *testing.T) {
 	}
 }
 
+func TestNpmBin(t *testing.T) {
+	testcases := []struct {
+		name  string
+		alias string
+		want  map[string]string
+	}{
+		{name: "without alias", want: map[string]string{"demo": "launcher.js"}},
+		{name: "with alias", alias: "dm", want: map[string]string{"demo": "launcher.js", "dm": "launcher.js"}},
+	}
+	baseline := npmOf(t, testutil.Tool(), stableRelease())
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := testutil.Tool()
+			tool.Alias = tc.alias
+			files := npmOf(t, tool, stableRelease())
+
+			var pkg struct {
+				Bin map[string]string `json:"bin"`
+			}
+			if err := json.Unmarshal([]byte(files["package.json"]), &pkg); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(pkg.Bin, tc.want) {
+				t.Errorf("bin = %v, want %v", pkg.Bin, tc.want)
+			}
+			if files["launcher.js"] != baseline["launcher.js"] {
+				t.Error("launcher.js depends on the alias")
+			}
+		})
+	}
+}
+
 // hostileValues are strings that would break out of a JavaScript string literal
 // or a line comment if they were embedded as they are.
 var hostileValues = []struct {

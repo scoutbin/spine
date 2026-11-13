@@ -315,6 +315,21 @@ report() {
     *) add_to_profile || say "$dir is not on your PATH. Add it with: export PATH=\"$dir:\$PATH\"" ;;
   esac
 }
+{%- if .Alias %}
+
+# Never replaces anything it did not create: a foreign file at the alias path is kept.
+link_alias() {
+  alias_path=$dir/{% .AliasBinaryName "linux" %}
+  if [ -L "$alias_path" ] && [ "$(readlink "$alias_path")" = "$bin" ]; then
+    return 0
+  fi
+  if [ -e "$alias_path" ] || [ -L "$alias_path" ]; then
+    say "warning: $alias_path already exists, skipping the {% .Alias %} alias"
+    return 0
+  fi
+  ln -s "$bin" "$alias_path" || say "warning: could not create $alias_path, skipping the {% .Alias %} alias"
+}
+{%- end %}
 
 main() {
   have curl || have wget || die "curl or wget is required"
@@ -383,6 +398,9 @@ main() {
   fi
   mv -f "$staged" "$dir/$bin"
   staged=
+{%- if .Alias %}
+  link_alias
+{%- end %}
 
   printf 'Installed {% .Name %} %s to %s\n' "$tag" "$dir"
   report

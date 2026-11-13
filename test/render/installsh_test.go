@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/scoutbin/spine"
 	"github.com/scoutbin/spine/internal/release"
 	"github.com/scoutbin/spine/internal/render"
 	"github.com/scoutbin/spine/test/testutil"
@@ -19,11 +21,10 @@ import (
 
 const releaseTag = "v1.2.3"
 
-// installScript renders install.sh for the fixture tool into a temp dir and
-// returns its path.
-func installScript(t *testing.T) string {
+// installScript renders install.sh for tool into a temp dir and returns its path.
+func installScript(t *testing.T, tool spine.Tool) string {
 	t.Helper()
-	files, err := render.Files(testutil.Tool(), "v0.0.0-test")
+	files, err := render.Files(tool, "v0.0.0-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +73,8 @@ func TestInstallShFromMirror(t *testing.T) {
 		t.Skip("no release target for " + runtime.GOARCH)
 	}
 	tool := testutil.Tool()
+	aliased := tool
+	aliased.Alias = "dm"
 	archive := tool.ArchiveName(releaseTag, runtime.GOOS, runtime.GOARCH)
 	binary := "#!/bin/sh\necho installed\n"
 	tarball := testutil.TarGz(t, testutil.TarEntry{Name: tool.BinaryName(runtime.GOOS), Body: binary})
@@ -85,6 +88,12 @@ func TestInstallShFromMirror(t *testing.T) {
 		wantCode   int
 		stderrHas  string
 		wantBinary string // path relative to the home dir; empty when nothing must be installed
+		alias      bool   // render install.sh for a tool with the alias dm
+		foreign    bool   // a file that is not a link to demo sits at the alias path before the install
+		rerun      bool   // run the install twice
+		wantLink   bool   // dm must be a relative symlink to demo
+		wantFiles  []string
+		stderrNot  string
 	}{
 		{
 			name:       "installs into the default directory",
@@ -98,6 +107,45 @@ func TestInstallShFromMirror(t *testing.T) {
 			checksums:  "{sum}  {archive}\n",
 			env:        []string{"DEMO_NO_MODIFY_PATH=1", "DEMO_INSTALL_DIR=custom/bin"},
 			wantBinary: "custom/bin/demo",
+		},
+		{
+			name:       "alias is a relative symlink to the binary",
+			checksums:  "{sum}  {archive}\n",
+			env:        []string{"DEMO_NO_MODIFY_PATH=1", "DEMO_INSTALL_DIR=bin"},
+			alias:      true,
+			wantBinary: "bin/demo",
+			wantLink:   true,
+			wantFiles:  []string{"demo", "dm"},
+			stderrNot:  "skipping",
+		},
+		{
+			name:       "rerun keeps the alias without a warning",
+			checksums:  "{sum}  {archive}\n",
+			env:        []string{"DEMO_NO_MODIFY_PATH=1", "DEMO_INSTALL_DIR=bin"},
+			alias:      true,
+			rerun:      true,
+			wantBinary: "bin/demo",
+			wantLink:   true,
+			wantFiles:  []string{"demo", "dm"},
+			stderrNot:  "skipping",
+		},
+		{
+			name:       "foreign file at the alias path is kept with a warning",
+			checksums:  "{sum}  {archive}\n",
+			env:        []string{"DEMO_NO_MODIFY_PATH=1", "DEMO_INSTALL_DIR=bin"},
+			alias:      true,
+			foreign:    true,
+			stderrHas:  "skipping the dm alias",
+			wantBinary: "bin/demo",
+			wantFiles:  []string{"demo", "dm"},
+		},
+		{
+			name:       "tool without an alias writes only the binary",
+			checksums:  "{sum}  {archive}\n",
+			env:        []string{"DEMO_NO_MODIFY_PATH=1", "DEMO_INSTALL_DIR=bin"},
+			wantBinary: "bin/demo",
+			wantFiles:  []string{"demo"},
+			stderrNot:  "skipping",
 		},
 		{
 			name:      "checksum mismatch installs nothing",
@@ -138,7 +186,7 @@ func TestInstallShFromMirror(t *testing.T) {
 			stderrHas: "DEMO_TRACK must be one of stable, alpha, beta or rc, got: nightly",
 		},
 	}
-	script := installScript(t)
+	scripts := map[bool]string{false: installScript(t, tool), true: installScript(t, aliased)}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -154,13 +202,27 @@ func TestInstallShFromMirror(t *testing.T) {
 			}
 			env := append([]string{"DEMO_VERSION=" + releaseTag, "DEMO_DOWNLOAD_BASE_URL=file://" + mirror}, tc.env...)
 
-			code, stderr := runInstall(t, script, home, os.Getenv("PATH"), env...)
+			if tc.foreign {
+				if err := os.MkdirAll(filepath.Join(home, "bin"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(home, "bin", "dm"), []byte("foreign"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			code, stderr := runInstall(t, scripts[tc.alias], home, os.Getenv("PATH"), env...)
+			if tc.rerun {
+				code, stderr = runInstall(t, scripts[tc.alias], home, os.Getenv("PATH"), env...)
+			}
 
 			if code != tc.wantCode {
 				t.Errorf("exit code = %d, want %d (stderr %q)", code, tc.wantCode, stderr)
 			}
 			if want := fill.Replace(tc.stderrHas); !strings.Contains(stderr, want) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+			}
+			if tc.stderrNot != "" && strings.Contains(stderr, tc.stderrNot) {
+				t.Errorf("stderr = %q, want it not to contain %q", stderr, tc.stderrNot)
 			}
 			installed, err := os.ReadFile(filepath.Join(home, tc.wantBinary))
 			if tc.wantBinary == "" {
@@ -177,6 +239,30 @@ func TestInstallShFromMirror(t *testing.T) {
 			}
 			if info, _ := os.Stat(filepath.Join(home, tc.wantBinary)); info.Mode().Perm() != 0o755 {
 				t.Errorf("installed mode = %v, want 0755", info.Mode().Perm())
+			}
+			if tc.wantFiles != nil {
+				entries, err := os.ReadDir(filepath.Dir(filepath.Join(home, tc.wantBinary)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var names []string
+				for _, e := range entries {
+					names = append(names, e.Name())
+				}
+				if !slices.Equal(names, tc.wantFiles) {
+					t.Errorf("install dir holds %v, want %v", names, tc.wantFiles)
+				}
+			}
+			aliasPath := filepath.Join(home, "bin", "dm")
+			if tc.wantLink {
+				if target, err := os.Readlink(aliasPath); err != nil || target != "demo" {
+					t.Errorf("readlink(dm) = %q, %v, want demo", target, err)
+				}
+			}
+			if tc.foreign {
+				if content, err := os.ReadFile(aliasPath); err != nil || string(content) != "foreign" {
+					t.Errorf("dm = %q, %v, want the foreign file kept", content, err)
+				}
 			}
 		})
 	}
@@ -235,7 +321,7 @@ func TestInstallShTrackResolution(t *testing.T) {
 		{name: "alpha from an indented list", track: release.Alpha, json: indented},
 	}
 	tool := testutil.Tool()
-	script := installScript(t)
+	script := installScript(t, tool)
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			wantTag, ok := release.HighestInPath(tc.track, published)

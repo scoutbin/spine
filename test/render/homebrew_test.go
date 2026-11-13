@@ -134,6 +134,35 @@ func TestHomebrewFreeTextEscaping(t *testing.T) {
 	}
 }
 
+func TestHomebrewAlias(t *testing.T) {
+	testcases := []struct {
+		name  string
+		alias string
+		want  bool
+	}{
+		{name: "with alias", alias: "dm", want: true},
+		{name: "without alias", want: false},
+	}
+	lines := []string{
+		`    bin.install_symlink "demo" => "dm"`,
+		`    assert_match "demo v#{version}", shell_output("#{bin}/dm --version")`,
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := testutil.Tool()
+			tool.Alias = tc.alias
+			formula := formulaOf(t, tool, stableRelease())
+
+			for _, line := range lines {
+				if got := slices.Contains(strings.Split(formula, "\n"), line); got != tc.want {
+					t.Errorf("formula has line %q = %v, want %v", line, got, tc.want)
+				}
+			}
+			rubySyntaxCheck(t, formula)
+		})
+	}
+}
+
 func TestHomebrewURLs(t *testing.T) {
 	testcases := []struct {
 		name    string

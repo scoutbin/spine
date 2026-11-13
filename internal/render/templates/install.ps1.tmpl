@@ -190,9 +190,18 @@
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $target = Join-Path $dir '{% .BinaryName "windows" %}'
         if (Test-Path -LiteralPath $target -PathType Container) { throw "$target is a directory" }
+{%- if .Alias %}
+        $aliasTarget = Join-Path $dir '{% .AliasBinaryName "windows" %}'
+        if (Test-Path -LiteralPath $aliasTarget -PathType Container) { throw "$aliasTarget is a directory" }
+{%- end %}
         $staged = Join-Path $dir ".{% .Name %}-$([guid]::NewGuid().ToString('N')).exe"
         Copy-Item -LiteralPath $exe -Destination $staged
         Move-Item -LiteralPath $staged -Destination $target -Force
+{%- if .Alias %}
+        $aliasStaged = Join-Path $dir ".{% .Alias %}-$([guid]::NewGuid().ToString('N')).exe"
+        Copy-Item -LiteralPath $exe -Destination $aliasStaged
+        Move-Item -LiteralPath $aliasStaged -Destination $aliasTarget -Force
+{%- end %}
 
         Write-Host "Installed {% .Name %} $tag to $dir"
         if ($env:{% .EnvVar "NO_MODIFY_PATH" %} -ne '1') { Add-ToUserPath $dir }

@@ -95,13 +95,17 @@ func Npm(t manifest.Tool, r Release) ([]File, error) {
 }
 
 func npmPackageJSON(t manifest.Tool, version string) ([]byte, error) {
+	bin := map[string]string{t.Name: "launcher.js"}
+	if t.Alias != "" {
+		bin[t.Alias] = "launcher.js"
+	}
 	m := npmManifest{
 		Name:        t.Channels.Npm.Package,
 		Version:     version,
 		Description: t.Summary,
 		License:     t.License,
 		Homepage:    "https://github.com/" + t.Repo,
-		Bin:         map[string]string{t.Name: "launcher.js"},
+		Bin:         bin,
 		Files:       []string{"install.js", "launcher.js"},
 		OS:          []string{"darwin", "linux", "win32"},
 		CPU:         []string{"x64", "arm64"},

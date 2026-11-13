@@ -26,6 +26,7 @@ var (
 // Tool is the parsed spine.json manifest of a tool.
 type Tool struct {
 	Name     string   `json:"name"`
+	Alias    string   `json:"alias"`
 	Repo     string   `json:"repo"`
 	Summary  string   `json:"summary"`
 	License  string   `json:"license"`
@@ -91,6 +92,10 @@ func (t Tool) validate() error {
 	switch {
 	case !namePattern.MatchString(t.Name):
 		return fmt.Errorf("name %q must match %s", t.Name, namePattern)
+	case t.Alias != "" && !namePattern.MatchString(t.Alias):
+		return fmt.Errorf("alias %q must match %s", t.Alias, namePattern)
+	case t.Alias == t.Name:
+		return fmt.Errorf("alias %q must differ from name", t.Alias)
 	case !repoPattern.MatchString(t.Repo):
 		return fmt.Errorf("repo %q must be owner/name", t.Repo)
 	case strings.TrimSpace(t.Summary) == "":
@@ -113,6 +118,14 @@ func (t Tool) BinaryName(goos string) string {
 		return t.Name + ".exe"
 	}
 	return t.Name
+}
+
+// AliasBinaryName returns the executable file name of the alias for goos, or "" when the tool has no alias.
+func (t Tool) AliasBinaryName(goos string) string {
+	if t.Alias == "" {
+		return ""
+	}
+	return Tool{Name: t.Alias}.BinaryName(goos)
 }
 
 // ArchiveName returns the release archive file name; a leading "v" on version is dropped.

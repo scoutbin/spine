@@ -40,6 +40,9 @@ func TestLoad(t *testing.T) {
 				return tool
 			}(),
 		},
+		{name: "valid alias", data: `{` + base + `,"alias":"pn"}`,
+			want: pin(func(p *spine.Tool) { p.Alias = "pn" })},
+		{name: "empty alias is none", data: `{` + base + `,"alias":""}`, want: pin(nil)},
 		{name: "unscoped npm", data: `{` + base + `,"channels":{"npm":{"package":"pin-cli"}}}`,
 			want: pin(func(p *spine.Tool) { p.Channels.Npm.Package = "pin-cli" })},
 		{name: "npm with dot and underscore", data: `{` + base + `,"channels":{"npm":{"package":"@scoutbin/pin_cli.js"}}}`,
@@ -68,6 +71,10 @@ func TestLoad(t *testing.T) {
 		{name: "hyphen in name", data: `{"name":"my-pin",` + rest + `}`, wantErr: `name "my-pin"`},
 		{name: "leading digit name", data: `{"name":"1pin",` + rest + `}`, wantErr: `name "1pin"`},
 		{name: "trailing newline name", data: `{"name":"pin\n",` + rest + `}`, wantErr: `name "pin\n"`},
+		{name: "alias equals name", data: `{` + base + `,"alias":"pin"}`, wantErr: `alias "pin" must differ from name`},
+		{name: "upper case alias", data: `{` + base + `,"alias":"Pn"}`, wantErr: `alias "Pn"`},
+		{name: "hyphen in alias", data: `{` + base + `,"alias":"p-n"}`, wantErr: `alias "p-n"`},
+		{name: "leading digit alias", data: `{` + base + `,"alias":"1pn"}`, wantErr: `alias "1pn"`},
 		{name: "repo without owner", data: `{"name":"pin","repo":"pin","summary":"s","license":"l"}`, wantErr: `repo "pin"`},
 		{name: "repo with url", data: `{"name":"pin","repo":"github.com/scoutbin/pin","summary":"s","license":"l"}`, wantErr: `repo "github.com/scoutbin/pin"`},
 		{name: "repo with space", data: `{"name":"pin","repo":"scoutbin/p in","summary":"s","license":"l"}`, wantErr: `repo "scoutbin/p in"`},
@@ -124,6 +131,7 @@ func TestMustLoad(t *testing.T) {
 func TestDerived(t *testing.T) {
 	demo := testutil.Tool()
 	scout := spine.MustLoad([]byte(`{"name":"scout","repo":"acme/scout","summary":"s","license":"MIT","channels":{"homebrew":{"tap":"Acme/homebrew-Tools_x"}}}`))
+	aliased := spine.MustLoad([]byte(`{"name":"demo","alias":"dm","repo":"scoutbin/demo","summary":"s","license":"l"}`))
 	noTap := spine.MustLoad([]byte(`{"name":"pin","repo":"scoutbin/pin","summary":"s","license":"l"}`))
 	testcases := []struct {
 		name string
@@ -134,6 +142,9 @@ func TestDerived(t *testing.T) {
 		{"binary unix", demo, func(t spine.Tool) string { return t.BinaryName("linux") }, "demo"},
 		{"binary windows", demo, func(t spine.Tool) string { return t.BinaryName("windows") }, "demo.exe"},
 		{"binary follows name", scout, func(t spine.Tool) string { return t.BinaryName("windows") }, "scout.exe"},
+		{"alias binary unix", aliased, func(t spine.Tool) string { return t.AliasBinaryName("linux") }, "dm"},
+		{"alias binary windows", aliased, func(t spine.Tool) string { return t.AliasBinaryName("windows") }, "dm.exe"},
+		{"alias binary without alias", demo, func(t spine.Tool) string { return t.AliasBinaryName("windows") }, ""},
 		{"archive strips v", demo, func(t spine.Tool) string { return t.ArchiveName("v1.2.3", "linux", "amd64") }, "demo_1.2.3_linux_amd64.tar.gz"},
 		{"archive without v", demo, func(t spine.Tool) string { return t.ArchiveName("1.2.3", "linux", "arm64") }, "demo_1.2.3_linux_arm64.tar.gz"},
 		{"archive windows zip", demo, func(t spine.Tool) string { return t.ArchiveName("v1.2.3-rc.1", "windows", "arm64") }, "demo_1.2.3-rc.1_windows_arm64.zip"},

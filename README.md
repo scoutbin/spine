@@ -14,15 +14,15 @@ Status: spine is pre-1.0 and is not tagged or released. Tools should pin an exac
 
 ## Repository layout
 
-| Path | Contents |
-| --- | --- |
-| `spine` (root) | `Run`, `Env`, `OSEnv`, `Tool`, `Load` and `MustLoad` |
-| `cli` | Command and flag framework, used by tools and the dev CLI |
-| `term` | Decides whether progress and color are shown. Output goes to stderr |
-| `cmd/spine` | The dev CLI, run as `go tool spine` |
-| `internal/` | Everything else, including release, channel, render and manifest code. Not importable from outside the module |
-| `internal/example` | A minimal tool. It is the fixture for spine's tests and CI |
-| `.github/workflows/` | `go-ci.yml` and `go-release.yml` (reusable), `ci.yml` (spine's own CI) |
+| Path                 | Contents                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `spine` (root)       | `Run`, `Env`, `OSEnv`, `Tool`, `Load` and `MustLoad`                                                          |
+| `cli`                | Command and flag framework, used by tools and the dev CLI                                                     |
+| `term`               | Decides whether progress and color are shown. Output goes to stderr                                           |
+| `cmd/spine`          | The dev CLI, run as `go tool spine`                                                                           |
+| `internal/`          | Everything else, including release, channel, render and manifest code. Not importable from outside the module |
+| `internal/example`   | A minimal tool. It is the fixture for spine's tests and CI                                                    |
+| `.github/workflows/` | `go-ci.yml` and `go-release.yml` (reusable), `ci.yml` (spine's own CI)                                        |
 
 ## spine.json
 
@@ -42,16 +42,17 @@ Each tool has one `spine.json` at the repository root. The binary, the dev CLI a
 }
 ```
 
-| Field | Required | Rules |
-| --- | --- | --- |
-| `name` | yes | Lower-case letters and digits, starting with a letter. Sets the binary, archive, install directory and environment variable names |
-| `repo` | yes | `owner/name` of the tool repository. Sets the release URLs and the package owner |
-| `summary` | yes | One line description |
-| `license` | yes | Used in the Homebrew formula |
-| `channels.homebrew.tap` | no | `owner/homebrew-suffix`. Enables Homebrew. The formula is `owner/suffix/name` in lower case |
-| `channels.npm.package` | no | npm package name, optionally scoped, lower case, at most 214 characters. Enables npm |
-| `channels.action` | no | `true` generates `action.yml` |
-| `channels.chocolatey.id` | no | Validated, but no channel uses it yet |
+| Field                    | Required | Rules                                                                                                                             |
+| ------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                   | yes      | Lower-case letters and digits, starting with a letter. Sets the binary, archive, install directory and environment variable names |
+| `alias`                  | no       | A second command name for the tool. Same rules as `name`, and it must differ from `name`                                          |
+| `repo`                   | yes      | `owner/name` of the tool repository. Sets the release URLs and the package owner                                                  |
+| `summary`                | yes      | One line description                                                                                                              |
+| `license`                | yes      | Used in the Homebrew formula                                                                                                      |
+| `channels.homebrew.tap`  | no       | `owner/homebrew-suffix`. Enables Homebrew. The formula is `owner/suffix/name` in lower case                                       |
+| `channels.npm.package`   | no       | npm package name, optionally scoped, lower case, at most 214 characters. Enables npm                                              |
+| `channels.action`        | no       | `true` generates `action.yml`                                                                                                     |
+| `channels.chocolatey.id` | no       | Validated, but no channel uses it yet                                                                                             |
 
 These values are derived from `name`, so they have no fields of their own:
 
@@ -59,6 +60,23 @@ These values are derived from `name`, so they have no fields of their own:
 - Archives: `mytool_<version>_<os>_<arch>.tar.gz`, or `.zip` on Windows. The version has no leading `v`.
 - Environment variables: the upper-cased name as prefix, such as `MYTOOL_VERSION`.
 - Default install directories: `~/.local/bin` for `install.sh`, `%LOCALAPPDATA%\mytool\bin` for `install.ps1`.
+
+## Command alias
+
+`alias` sets one extra command name for the tool. It follows the same rules as `name` and must differ from it.
+
+Each channel makes the alias available as follows:
+
+- `install.sh` creates a relative symlink named `<alias>` that points to `<name>`. If anything else already exists at that path, the installer keeps it, prints a warning and exits 0. A rerun leaves a correct link alone.
+- `install.ps1` copies the binary to `<alias>.exe` next to `<name>.exe`. Each run overwrites the copy.
+- Homebrew links the alias with `install_symlink`.
+- npm adds a second `bin` entry, so a global install creates both commands.
+- The GitHub Action gets the alias from the installers. `outputs.path` still points to the canonical executable.
+- Release archives are unchanged and contain only the canonical binary.
+
+An npm global install fails with EEXIST if another globally installed package already owns the alias's bin name.
+
+Messages and `info` always use the canonical name. On install.sh and Homebrew, `info` reports the canonical path, because the symlink resolves to it. On Windows, the copy is a separate file, so `info` reports its path.
 
 ## Adopting spine in a tool
 
@@ -191,14 +209,14 @@ The installers and the action pick the newest release on the track's upgrade pat
 
 Both installers read these variables. `NAME` is the upper-cased tool name.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `NAME_VERSION` | newest release on the track | Install this tag. Takes precedence over `NAME_TRACK` |
-| `NAME_TRACK` | `stable` | `stable`, `alpha`, `beta` or `rc` |
-| `NAME_INSTALL_DIR` | see above | Install directory |
-| `NAME_NO_MODIFY_PATH` | unset | `1` stops the installer from changing PATH |
-| `NAME_DOWNLOAD_BASE_URL` | GitHub | `install.sh` only. Mirror for assets, starting with `https://` or `file://`. Requires `NAME_VERSION` |
-| `NAME_GITHUB_TOKEN` | none | Token for the release lookup. It is sent only to `api.github.com`, not with downloads |
+| Variable                 | Default                     | Purpose                                                                                              |
+| ------------------------ | --------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `NAME_VERSION`           | newest release on the track | Install this tag. Takes precedence over `NAME_TRACK`                                                 |
+| `NAME_TRACK`             | `stable`                    | `stable`, `alpha`, `beta` or `rc`                                                                    |
+| `NAME_INSTALL_DIR`       | see above                   | Install directory                                                                                    |
+| `NAME_NO_MODIFY_PATH`    | unset                       | `1` stops the installer from changing PATH                                                           |
+| `NAME_DOWNLOAD_BASE_URL` | GitHub                      | `install.sh` only. Mirror for assets, starting with `https://` or `file://`. Requires `NAME_VERSION` |
+| `NAME_GITHUB_TOKEN`      | none                        | Token for the release lookup. It is sent only to `api.github.com`, not with downloads                |
 
 The installed binary has these built-in commands:
 

@@ -29,9 +29,15 @@ class {% .FormulaClass %} < Formula
 
   def install
     bin.install {% ruby (.BinaryName "linux") %}
+{%- if .Alias %}
+    bin.install_symlink {% ruby .Name %} => {% ruby .Alias %}
+{%- end %}
   end
 
   test do
     assert_match "{% .Name %} v#{version}", shell_output("#{bin}/{% .Name %} --version")
+{%- if .Alias %}
+    assert_match "{% .Name %} v#{version}", shell_output("#{bin}/{% .Alias %} --version")
+{%- end %}
   end
 end

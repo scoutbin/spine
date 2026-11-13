@@ -150,3 +150,37 @@ func TestSummaryEscaping(t *testing.T) {
 		})
 	}
 }
+
+func TestAliasRendering(t *testing.T) {
+	const alias = "dmx"
+	needles := map[string]string{
+		"install.sh":  alias,
+		"install.ps1": alias + ".exe",
+	}
+	testcases := []struct {
+		name  string
+		alias string
+	}{
+		{name: "alias set", alias: alias},
+		{name: "no alias"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := testutil.Tool()
+			tool.Alias = tc.alias
+			files, err := render.Files(tool, "v0.0.0-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range files {
+				needle, ok := needles[f.Path]
+				if !ok {
+					continue
+				}
+				if got := strings.Contains(string(f.Content), needle); got != (tc.alias != "") {
+					t.Errorf("%s contains %q = %v, want %v", f.Path, needle, got, tc.alias != "")
+				}
+			}
+		})
+	}
+}

@@ -217,6 +217,9 @@ jobs:
             *) fail "info --json did not report version $CI_TAG" ;;
           esac
 
+          [ "$("$(brew --prefix)/bin/xmpl" --version)" = "$line" ] || fail "xmpl --version differs from example --version"
+          [ "$("$(brew --prefix)/bin/xmpl" info --json)" = "$info" ] || fail "xmpl info --json differs from example info --json"
+
           upgrade=$("$(brew --prefix)/bin/example" upgrade)
           echo "$upgrade"
           printf '%s\n' "$upgrade" | grep -qxF "  brew upgrade scoutbin/tap/example" ||
@@ -279,6 +282,8 @@ jobs:
           esac
           [ "$("$dir/example" info --json)" = "{\"path\":\"$real/example\",\"channel\":\"install.sh\",\"version\":\"$CI_TAG\"}" ] ||
             fail "info --json did not report channel install.sh and the resolved path"
+          [ "$("$dir/xmpl" --version)" = "$line" ] || fail "xmpl --version differs from example --version"
+          [ "$("$dir/xmpl" info --json)" = "$("$dir/example" info --json)" ] || fail "xmpl info --json differs from example info --json"
       - name: Default directory, EXAMPLE_VERSION and EXAMPLE_INSTALL_DIR are honored
         run: |
           fail() { echo "::error::$*"; exit 1; }
@@ -784,6 +789,9 @@ jobs:
             *) fail "info --json did not report version $CI_TAG" ;;
           esac
 
+          [ "$(xmpl --version)" = "$line" ] || fail "xmpl --version differs from example --version"
+          [ "$(xmpl info --json)" = "$info" ] || fail "xmpl info --json differs from example info --json"
+
           upgrade=$(example upgrade)
           echo "$upgrade"
           printf '%s\n' "$upgrade" | grep -qxF "  npm install -g @scoutbin/example@latest" ||
@@ -901,6 +909,8 @@ jobs:
             *'"channel":"npm"'*) ;;
             *) fail "info --json did not report channel npm" ;;
           esac
+          [ "$(xmpl --version)" = "$(example --version)" ] || fail "xmpl --version differs from example --version"
+          [ "$(xmpl info --json)" = "$(example info --json)" ] || fail "xmpl info --json differs from example info --json"
       # Runs on pnpm 12 only: approve-builds -g --all runs the script of the global install.
       # Not on Windows, where pnpm 12 approve-builds -g finds no pending builds: it compares a
       # \\?\-prefixed install dir against a plain global dir, so no global package counts as its own.
@@ -965,6 +975,9 @@ jobs:
             "example $CI_TAG (commit "*) ;;
             *) fail "example printed an unexpected version line" ;;
           esac
+          [ "$(command -v xmpl)" = "$GITHUB_WORKSPACE/action-bin/xmpl" ] || fail "xmpl is not the installed alias on PATH"
+          [ "$(xmpl --version)" = "$(example --version)" ] || fail "xmpl --version differs from example --version"
+          [ "$(xmpl info --json)" = "$(example info --json)" ] || fail "xmpl info --json differs from example info --json"
 
   # Covers failure paths only: a positive Windows install test needs a published release.
   windows:
