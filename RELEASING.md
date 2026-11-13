@@ -81,10 +81,10 @@ The release job checks that the tag still points at the commit that was built, a
 
 Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `resolve` fails without one. If a tag was pushed without a section, do not move or delete it. Run `go tool spine change` again instead. It picks a number above the orphan tag.
 
-| Tag | GitHub release | npm dist-tag | Homebrew formula |
-| --- | --- | --- | --- |
-| `vX.Y.Z` | Latest | `latest` | Updated |
-| `vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N` | Prerelease, not latest | The track name | Not updated |
+| Tag                                  | GitHub release         | npm dist-tag   | Homebrew formula |
+| ------------------------------------ | ---------------------- | -------------- | ---------------- |
+| `vX.Y.Z`                             | Latest                 | `latest`       | Updated          |
+| `vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N` | Prerelease, not latest | The track name | Not updated      |
 
 ## Releasing a tool
 
@@ -193,7 +193,7 @@ Run these from a checkout of the tool at `vX.Y.Z`. `--online` checks the downloa
 
 npm is enabled by `channels.npm.package`. The rendered `package.json` sets `publishConfig.access` to `public` and `engines.node` to `>=22`.
 
-The npm job publishes with OIDC trusted publishing, so no npm token is stored. The npm job is the only job with `id-token: write`. It installs npm 11.21.1, set by `NPM_VERSION` in `go-release.yml`, on Node 24. The same npm runs the dist-tag reconcile. Changing the pin is a change to `go-release.yml`, so it needs a spine release.
+The npm job publishes with OIDC trusted publishing, so no npm token is stored. The npm job is the only job with `id-token: write`. It installs npm 11.21.1, set by `NPM_VERSION` in `go-release.yml`, on the Node version pinned by spine's `.node-version`. The same npm runs the dist-tag reconcile. Changing the pin is a change to `go-release.yml`, so it needs a spine release.
 
 Stable publishes use `--tag latest`. Prereleases use `--tag alpha`, `--tag beta` or `--tag rc`. After each publish, the reconcile moves each alpha, beta and rc dist-tag that already exists to the highest version on its upgrade path:
 

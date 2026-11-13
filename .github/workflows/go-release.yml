@@ -385,9 +385,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # job.workflow_* is spine at the SHA the caller pins, so the Node version is spine's, not the caller's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .spine
+          sparse-checkout: .node-version
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version-file: .spine/.node-version
           package-manager-cache: false
       # npm is pinned to a version that supports trusted publishing and `npm dist-tag` over OIDC,
       # so publishing does not depend on the npm bundled with Node.

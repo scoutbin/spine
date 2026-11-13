@@ -1,0 +1,38 @@
+name: Node CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # In a reusable workflow, files resolve to the caller. job.workflow_* points
+      # at spine at the commit the caller pinned, so spine owns the Node and pnpm
+      # versions and the Prettier install.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .spine
+          sparse-checkout: |
+            .node-version
+            package.json
+            pnpm-lock.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # Outside the workspace so Prettier does not check spine's own files.
+      - name: Move spine checkout out of the workspace
+        run: mv .spine "$RUNNER_TEMP/spine"
+      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3.2.0
+        with:
+          working-directory: ${{ runner.temp }}/spine
+          require-lockfile: true
+      - run: '"$RUNNER_TEMP/spine/node_modules/.bin/prettier" --check .'

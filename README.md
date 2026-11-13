@@ -22,7 +22,7 @@ Status: spine is pre-1.0 and is not tagged or released. Tools should pin an exac
 | `cmd/spine`          | The dev CLI, run as `go tool spine`                                                                           |
 | `internal/`          | Everything else, including release, channel, render and manifest code. Not importable from outside the module |
 | `internal/example`   | A minimal tool. It is the fixture for spine's tests and CI                                                    |
-| `.github/workflows/` | `go-ci.yml` and `go-release.yml` (reusable), `ci.yml` (spine's own CI)                                        |
+| `.github/workflows/` | `go-ci.yml`, `go-release.yml` and `node-ci.yml` (reusable), `ci.yml` (spine's own CI)                         |
 
 ## spine.json
 
@@ -182,6 +182,8 @@ Secrets, the switch that enables publishing, and the spine upgrade procedure are
 - tests on Ubuntu, macOS and Windows, with gofmt, `go vet` and `go test`,
 - a dist build of the six archives and `checksums.txt`,
 - a check that the generated files are up to date.
+
+`node-ci.yml` (`workflow_call`, no inputs, no secrets) runs `prettier --check .` on the caller's repository. The Node version, pnpm version and Prettier version come from spine's `.node-version`, `package.json` and `pnpm-lock.yaml` at the pinned commit, so it needs no setup in the caller. Call it from a job with `permissions: contents: read`, the same way as `go-ci.yml`.
 
 `go-release.yml` (`workflow_call`) takes the inputs `tag` (required) and `publish` (default `false`). The secret `homebrew-tap-deploy-key` is optional. It is used by the Homebrew job, which runs only for stable tags. Jobs:
 

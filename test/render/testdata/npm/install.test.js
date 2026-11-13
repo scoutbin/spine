@@ -370,7 +370,10 @@ function fakeGet(respond) {
       res.resume = () => {};
       onResponse(res);
       if (reply.status === 200) {
-        res.emit("data", Buffer.isBuffer(reply.body) ? reply.body : Buffer.from(reply.body));
+        res.emit(
+          "data",
+          Buffer.isBuffer(reply.body) ? reply.body : Buffer.from(reply.body),
+        );
         res.emit("end");
       }
     });
@@ -573,5 +576,8 @@ test("a failed install names the base URL override for users behind a proxy", (t
 
   assert.equal(run.status, 1);
   assert.match(run.stderr, /demo: install failed: /);
-  assert.match(run.stderr, /Behind a proxy, set DEMO_DOWNLOAD_BASE_URL to a directory URL/);
+  assert.match(
+    run.stderr,
+    /Behind a proxy, set DEMO_DOWNLOAD_BASE_URL to a directory URL/,
+  );
 });
