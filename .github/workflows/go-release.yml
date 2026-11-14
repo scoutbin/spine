@@ -371,6 +371,7 @@ jobs:
     if: ${{ inputs.publish && needs.resolve.outputs.npm == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: npm
     permissions:
       contents: read
       id-token: write
