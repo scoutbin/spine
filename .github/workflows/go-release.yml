@@ -12,9 +12,14 @@ on:
         required: false
         type: boolean
         default: false
+      homebrew-tap-app-client-id:
+        description: Client ID of the GitHub App installed on the Homebrew tap with contents write access. Required when the homebrew channel publishes
+        required: false
+        type: string
+        default: ""
     secrets:
-      homebrew-tap-deploy-key:
-        description: Private SSH key with write access to the Homebrew tap. Required when the homebrew channel publishes
+      homebrew-tap-app-private-key:
+        description: Private key of the GitHub App named by homebrew-tap-app-client-id. Required when the homebrew channel publishes
         required: false
 
 permissions:
@@ -91,12 +96,14 @@ jobs:
             printf '%s\n' "$notes"
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
-      - name: Require the Homebrew tap deploy key
+      - name: Require the Homebrew tap app credentials
         if: ${{ inputs.publish && steps.manifest.outputs.homebrew == 'true' && steps.classify.outputs.track == 'stable' }}
         env:
-          TAP_DEPLOY_KEY: ${{ secrets.homebrew-tap-deploy-key }}
+          TAP_APP_CLIENT_ID: ${{ inputs.homebrew-tap-app-client-id }}
+          TAP_APP_PRIVATE_KEY: ${{ secrets.homebrew-tap-app-private-key }}
         run: |
-          [ -n "$TAP_DEPLOY_KEY" ] || { echo "::error::The homebrew-tap-deploy-key secret is not set"; exit 1; }
+          [ -n "$TAP_APP_CLIENT_ID" ] || { echo "::error::The homebrew-tap-app-client-id input is not set"; exit 1; }
+          [ -n "$TAP_APP_PRIVATE_KEY" ] || { echo "::error::The homebrew-tap-app-private-key secret is not set"; exit 1; }
       - name: Refuse an already published release
         if: inputs.publish
         env:
@@ -319,11 +326,28 @@ jobs:
           path: dist
       - name: Render the formula
         run: go tool spine package homebrew --tag "$TAG"
+      - name: Split the tap into owner and repository
+        id: tap
+        env:
+          TAP: ${{ needs.resolve.outputs.homebrew_tap }}
+        run: |
+          {
+            echo "owner=${TAP%%/*}"
+            echo "repository=${TAP#*/}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ inputs.homebrew-tap-app-client-id }}
+          private-key: ${{ secrets.homebrew-tap-app-private-key }}
+          owner: ${{ steps.tap.outputs.owner }}
+          repositories: ${{ steps.tap.outputs.repository }}
+          permission-contents: write
       # A shared tap takes pushes from every tool, so a rejected push is retried after a rebase.
       - name: Push the formula to the tap
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAP_DEPLOY_KEY: ${{ secrets.homebrew-tap-deploy-key }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           TAP: ${{ needs.resolve.outputs.homebrew_tap }}
           NAME: ${{ needs.resolve.outputs.name }}
         run: |
@@ -334,15 +358,13 @@ jobs:
           version=$(sed -n 's/^  version "\(.*\)"$/\1/p' "$rendered")
           [ -n "$version" ] || { echo "::error::$rendered has no version line"; exit 1; }
 
-          umask 077
-          key="$RUNNER_TEMP/tap_deploy_key"
-          trap 'rm -f "$key"' EXIT
-          known_hosts="$RUNNER_TEMP/known_hosts"
-          printf '%s\n' "$TAP_DEPLOY_KEY" | tr -d '\r' > "$key"
-          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+          # The token reaches git through a credential helper, so it is never in the remote URL or on disk.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
+          export GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+          export GIT_TERMINAL_PROMPT=0
 
-          git clone --branch main "git@github.com:$TAP.git" tap
+          git clone --branch main "https://github.com/$TAP.git" tap
           if grep -qx "  version \"$version\"" "tap/Formula/$formula" 2>/dev/null; then
             echo "The tap already has $NAME $version. Nothing to push."
             exit 0
@@ -350,8 +372,11 @@ jobs:
 
           mkdir -p tap/Formula
           cp "$rendered" "tap/Formula/$formula"
-          git -C tap config user.name "github-actions[bot]"
-          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bot="$APP_SLUG[bot]"
+          bot_id=$(gh api "/users/$bot" --jq .id) || bot_id=""
+          [ -n "$bot_id" ] || { echo "::error::The bot user lookup failed for app $APP_SLUG"; exit 1; }
+          git -C tap config user.name "$bot"
+          git -C tap config user.email "$bot_id+$bot@users.noreply.github.com"
           git -C tap add "Formula/$formula"
           git -C tap commit -m "$NAME $version"
           for attempt in 1 2 3 4 5; do

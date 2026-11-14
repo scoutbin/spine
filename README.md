@@ -166,8 +166,9 @@ Messages and `info` always use the canonical name. On install.sh and Homebrew, `
        with:
          tag: ${{ inputs.tag }}
          publish: ${{ inputs.publish }}
+         homebrew-tap-app-client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
        secrets:
-         homebrew-tap-deploy-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+         homebrew-tap-app-private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
    ```
 
 6. `go tool spine change <bump> "<message>"` creates `CHANGELOG.md` at the repository root on the first release and writes each release's section. The release workflow publishes that section as the release notes.
@@ -185,13 +186,13 @@ Secrets, the switch that enables publishing, and the spine upgrade procedure are
 
 `node-ci.yml` (`workflow_call`, no inputs, no secrets) runs `prettier --check .` on the caller's repository. The Node version, pnpm version and Prettier version come from spine's `.node-version`, `package.json` and `pnpm-lock.yaml` at the pinned commit, so it needs no setup in the caller. Call it from a job with `permissions: contents: read`, the same way as `go-ci.yml`.
 
-`go-release.yml` (`workflow_call`) takes the inputs `tag` (required) and `publish` (default `false`). The secret `homebrew-tap-deploy-key` is optional. It is used by the Homebrew job, which runs only for stable tags. Jobs:
+`go-release.yml` (`workflow_call`) takes the inputs `tag` (required), `publish` (default `false`) and `homebrew-tap-app-client-id` (default empty). The secret `homebrew-tap-app-private-key` is optional. Both are used by the Homebrew job, which runs only for stable tags. `resolve` fails on a stable publish with Homebrew enabled if either is missing. Jobs:
 
 - `resolve`: reads the manifest and the tag. When `publish` is true, it refuses a tag that already has a published release. It fails when `CHANGELOG.md` has no section for the tag, on dry runs too.
 - `build`: runs the tests and builds the archives. It dry-runs the Homebrew package (stable only) and the npm package.
 - `attest`: attests the release artifacts.
 - `release`: creates a draft release with the tag's `CHANGELOG.md` section as its notes, uploads the assets and publishes it. Notes are set only when the release is created, so a re-run keeps the body of an existing release. It reuses an existing release whose assets are identical, and fails on missing or differing assets.
-- `homebrew`: pushes the formula to the tap over SSH, using the deploy key. It runs only when `publish` is true, Homebrew is enabled in `spine.json` and the track is stable.
+- `homebrew`: pushes the formula to the tap over HTTPS, using a token from the GitHub App named by the client ID and private key. It runs only when `publish` is true, Homebrew is enabled in `spine.json` and the track is stable.
 - `npm`: publishes the package with OIDC trusted publishing, then reconciles the npm dist-tags.
 
 With `publish: false`, the publishing jobs do not run.

@@ -7,7 +7,7 @@ This covers releasing a tool that calls spine's reusable workflows, upgrading sp
 - `spine.json` at the repository root. Only the channels it enables run.
 - `CHANGELOG.md` at the repository root. `go tool spine change` creates it on the first release. See [Releasing a tool](#releasing-a-tool).
 - `.github/workflows/ci.yml` and `.github/workflows/release.yml`, shown below.
-- `HOMEBREW_TAP_DEPLOY_KEY` as a repository secret, if `channels.homebrew.tap` is set. It is needed only for a publish of a stable tag. Dry runs do not use it.
+- `HOMEBREW_TAP_APP_CLIENT_ID` as a repository variable and `HOMEBREW_TAP_APP_PRIVATE_KEY` as a repository secret, if `channels.homebrew.tap` is set. They are needed only for a publish of a stable tag. Dry runs do not use them. See [Homebrew](#homebrew).
 - A trusted publisher on npmjs.com for the package, if `channels.npm.package` is set. See [npm](#npm).
 
 Chocolatey is not wired. `channels.chocolatey.id` is validated, but no job uses it and no secret is needed for it.
@@ -60,8 +60,9 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       publish: ${{ inputs.publish }}
+      homebrew-tap-app-client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
     secrets:
-      homebrew-tap-deploy-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      homebrew-tap-app-private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
 ```
 
 Why the caller looks like this:
@@ -140,7 +141,7 @@ Every release tag, prereleases included, needs a section in `CHANGELOG.md`. `res
    gh workflow run release.yml -f tag=vX.Y.Z -f publish=true
    ```
 
-   Before anything is published, the run refuses a tag that already has a published release. For a stable tag with Homebrew enabled, it also fails if `HOMEBREW_TAP_DEPLOY_KEY` is not set. Then it attests the archives and checksums, creates a draft release whose notes are the tag's section in `CHANGELOG.md`, uploads the assets and publishes the release. After that, the Homebrew job pushes the formula to the tap (stable tags only), and the npm job publishes the package (when npm is enabled).
+   Before anything is published, the run refuses a tag that already has a published release. For a stable tag with Homebrew enabled, it also fails if `HOMEBREW_TAP_APP_CLIENT_ID` or `HOMEBREW_TAP_APP_PRIVATE_KEY` is not set. Then it attests the archives and checksums, creates a draft release whose notes are the tag's section in `CHANGELOG.md`, uploads the assets and publishes the release. After that, the Homebrew job pushes the formula to the tap (stable tags only), and the npm job publishes the package (when npm is enabled).
 
 4. Check the result.
 
@@ -168,14 +169,16 @@ Only stable tags update the formula. For a prerelease tag the Homebrew job is sk
 
 The push job reads the `version` line of the rendered formula. If the tap's formula already has that exact line, the job exits without a push. Otherwise it commits and pushes to `main`. It retries up to five times, rebasing onto the tap before each retry, because several tools share the tap. The check compares only the version line, not version numbers. Do not remove the `version` line from the formula template without changing this check.
 
-Set up the deploy key once for the tap:
+Set up a GitHub App once for the tap:
 
-1. Create a key pair outside the repositories, for example with `ssh-keygen -t ed25519 -N "" -f ./homebrew-tap-deploy`.
-2. In `scoutbin/homebrew-tap`, go to Settings, Deploy keys, add the `.pub` file and select "Allow write access".
-3. In each tool repository, go to Settings, Secrets and variables, Actions, and add the private key as `HOMEBREW_TAP_DEPLOY_KEY`.
-4. Delete the local private key.
+1. In the scoutbin organization, create a GitHub App. Set the homepage URL and disable the webhook. Under repository permissions, set Contents to Read and write. Metadata read-only is added automatically. Allow installation only on this account.
+2. Generate a private key for the app. GitHub downloads it as a `.pem` file.
+3. Install the app on `scoutbin/homebrew-tap` only.
+4. In each tool repository, go to Settings, Secrets and variables, Actions. Add the app's client ID as the repository variable `HOMEBREW_TAP_APP_CLIENT_ID`, and the contents of the `.pem` file as the repository secret `HOMEBREW_TAP_APP_PRIVATE_KEY`.
+5. Delete the local `.pem` file.
+6. If a branch ruleset or branch protection rule covers the tap's `main`, give the app bypass permission. Otherwise the app cannot push the formula.
 
-One key serves all tools, because they share the tap.
+One app serves all tools, because they share the tap. Each run of the Homebrew job mints a short-lived installation token for the tap, and pushes over HTTPS. Formula commits are authored by the app's bot identity, `<app-slug>[bot]`.
 
 CI runs `ruby -c` on the formula. CI does not run `brew audit`. The commands below for a local audit have not been run.
 
