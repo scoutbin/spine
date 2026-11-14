@@ -28,11 +28,10 @@ jobs:
             pnpm-lock.yaml
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      # Outside the workspace so Prettier does not check spine's own files.
-      - name: Move spine checkout out of the workspace
-        run: mv .spine "$RUNNER_TEMP/spine"
       - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3.2.0
         with:
-          working-directory: ${{ runner.temp }}/spine
+          working-directory: .spine
           require-lockfile: true
-      - run: '"$RUNNER_TEMP/spine/node_modules/.bin/prettier" --check .'
+      # pnpm/setup only accepts a working-directory inside the workspace, so
+      # Prettier is told to skip spine's own files instead.
+      - run: .spine/node_modules/.bin/prettier --check . '!.spine'

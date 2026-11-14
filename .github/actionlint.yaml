@@ -1,0 +1,5 @@
+paths:
+  # actionlint's job context type lacks the documented job.workflow_repository and job.workflow_sha properties (rhysd/actionlint#705).
+  .github/workflows/{go-release,node-ci}.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type .+'

@@ -361,6 +361,8 @@ jobs:
           # The token reaches git through a credential helper, so it is never in the remote URL or on disk.
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=credential.https://github.com.helper
+          # The single quotes are deliberate: git's shell expands $GH_TOKEN when the helper runs, so it stays out of the config.
+          # shellcheck disable=SC2016
           export GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
           export GIT_TERMINAL_PROMPT=0
 
@@ -372,7 +374,7 @@ jobs:
 
           mkdir -p tap/Formula
           cp "$rendered" "tap/Formula/$formula"
-          bot="$APP_SLUG[bot]"
+          bot="${APP_SLUG}[bot]"
           bot_id=$(gh api "/users/$bot" --jq .id) || bot_id=""
           [ -n "$bot_id" ] || { echo "::error::The bot user lookup failed for app $APP_SLUG"; exit 1; }
           git -C tap config user.name "$bot"
