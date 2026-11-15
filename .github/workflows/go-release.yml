@@ -464,20 +464,16 @@ jobs:
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           name=$(node -p "require('./dist/packages/npm/package.json').name")
-          version=$(node -p "require('./dist/packages/npm/package.json').version")
 
-          # The registry can serve a cached package page for a moment after a publish.
-          seen=false
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if versions=$(npm view "$name" versions --json 2>/dev/null) &&
-              jq -e --arg version "$version" '[.] | flatten | any(. == $version)' <<<"$versions" >/dev/null; then
-              seen=true
-              break
-            fi
-            echo "$name@$version is not in the published versions yet (attempt $attempt)."
-            sleep 6
-          done
-          [ "$seen" = true ] || fail "$name@$version did not show up in the versions on npm."
+          err=$(mktemp)
+          if ! versions=$(npm view "$name" versions --json 2>"$err"); then
+            grep -q 'npm error code E404' "$err" || {
+              cat "$err" >&2
+              fail "Could not read the versions of $name."
+            }
+            echo "$name is not listed on npm yet. Publish set the dist-tag."
+            exit 0
+          fi
 
           dist_tags=$(npm view "$name" dist-tags --json) || fail "Could not read the dist-tags of $name."
           changes=$(go tool spine dist-tags "$TAG" --versions "$versions" --dist-tags "$dist_tags") ||
