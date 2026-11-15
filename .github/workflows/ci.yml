@@ -940,7 +940,8 @@ jobs:
           echo "$out"
           if [ "$RUNNER_OS" = Windows ]; then
             [ "$rc" -ne 0 ] || fail "example exited 0 without the binary"
-            node "$(pnpm root -g)/@scoutbin/example/install.js"
+            fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
+            if [ -n "$fix" ]; then eval "$fix"; else node "$(pnpm root -g)/@scoutbin/example/install.js"; fi
           else
             [ "$rc" -eq 2 ] || fail "the placeholder exited $rc, not 2, without the binary"
             fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
