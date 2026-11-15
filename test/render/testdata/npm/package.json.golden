@@ -9,14 +9,14 @@
     "url": "git+https://github.com/scoutbin/demo.git"
   },
   "bin": {
-    "demo": "launcher.js"
+    "demo": "demo.exe"
   },
   "scripts": {
     "postinstall": "node install.js"
   },
   "files": [
     "install.js",
-    "launcher.js"
+    "demo.exe"
   ],
   "os": [
     "darwin",

@@ -111,16 +111,6 @@ test("archiveName rejects unsupported platforms", () => {
   }
 });
 
-test("binaryPath keeps the binary inside the package under node_modules layouts", () => {
-  const testcases = [
-    ["linux", path.join("pkg", "vendor", "demo")],
-    ["win32", path.join("pkg", "vendor", "demo.exe")],
-  ];
-  for (const [platform, want] of testcases) {
-    assert.equal(installer.binaryPath("pkg", platform), want);
-  }
-});
-
 test("fixCommand quotes the install script path for the platform", () => {
   const script = (dir) => path.join(dir, "install.js");
   const testcases = [
@@ -450,45 +440,50 @@ const mirrorEnv = (mirror) => ({
   DEMO_DOWNLOAD_BASE_URL: pathToFileURL(mirror).href,
 });
 
-test("install verifies, extracts and writes the binary", async (t) => {
+function seedPackage(t) {
+  const dir = path.join(fs.realpathSync(tempDir(t)), "pkg");
+  fs.cpSync(pkgDir, dir, { recursive: true });
+  return dir;
+}
+
+const script = (text) => `#!/bin/sh\necho '${text}'\n`;
+
+test("install replaces the placeholder with the verified binary", async (t) => {
   const testcases = [
     {
       platform: "linux",
       arch: "x64",
-      binaryName: "demo",
-      content: "linux amd64 binary",
+      content: script("linux amd64 binary"),
     },
     {
       platform: "darwin",
       arch: "arm64",
-      binaryName: "demo",
-      content: "darwin arm64 binary",
+      content: script("darwin arm64 binary"),
     },
     {
       platform: "win32",
       arch: "x64",
-      binaryName: "demo.exe",
-      content: "windows amd64 binary",
+      content: script("windows amd64 binary"),
     },
   ];
   for (const tc of testcases) {
-    const dir = path.join(tempDir(t), "pkg");
+    const dir = seedPackage(t);
+    const before = fs.readdirSync(dir).sort();
     await installer.install(dir, mirrorEnv(mirrorDir), tc.platform, tc.arch);
-    const binary = installer.binaryPath(dir, tc.platform);
-    assert.equal(path.basename(binary), tc.binaryName);
-    assert.equal(fs.readFileSync(binary, "utf8"), tc.content);
-    if (tc.platform !== "win32" && process.platform !== "win32") {
-      assert.equal(fs.statSync(binary).mode & 0o777, 0o755);
+    const binary = installer.binaryPath(dir);
+    assert.equal(fs.readFileSync(binary, "utf8"), tc.content, tc.platform);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(binary).mode & 0o777, 0o755, tc.platform);
     }
     assert.deepEqual(
-      fs.readdirSync(path.dirname(binary)),
-      [tc.binaryName],
-      "no temp files left behind",
+      fs.readdirSync(dir).sort(),
+      before,
+      `${tc.platform}: no temp files left behind`,
     );
   }
 });
 
-test("install leaves no binary when the release asset is tampered with, replaced or missing", async (t) => {
+test("install leaves the placeholder untouched when the release asset is tampered with, replaced or missing", async (t) => {
   const name = "demo_1.2.3_linux_amd64.tar.gz";
   const testcases = [
     {
@@ -511,7 +506,10 @@ test("install leaves no binary when the release asset is tampered with, replaced
     const root = tempDir(t);
     fs.cpSync(mirrorDir, path.join(root, "mirror"), { recursive: true });
     tc.change(path.join(root, "mirror", name));
-    const dir = path.join(root, "pkg");
+    const dir = seedPackage(t);
+    const binary = installer.binaryPath(dir);
+    const placeholder = fs.readFileSync(binary);
+    const before = fs.readdirSync(dir).sort();
     await assert.rejects(
       installer.install(
         dir,
@@ -522,44 +520,61 @@ test("install leaves no binary when the release asset is tampered with, replaced
       tc.error,
       tc.name,
     );
-    assert.equal(
-      fs.existsSync(installer.binaryPath(dir, "linux")),
-      false,
-      `${tc.name}: binary exists`,
+    assert.deepEqual(
+      fs.readFileSync(binary),
+      placeholder,
+      `${tc.name}: placeholder changed`,
+    );
+    assert.deepEqual(
+      fs.readdirSync(dir).sort(),
+      before,
+      `${tc.name}: files left behind`,
     );
   }
 });
 
 test(
-  "the launcher runs the installed binary and explains a missing one",
-  { skip: process.platform === "win32" && "needs a shebang binary" },
-  (t) => {
-    const dir = path.join(fs.realpathSync(tempDir(t)), "pkg");
-    fs.cpSync(pkgDir, dir, { recursive: true });
-    const launcher = path.join(dir, "launcher.js");
+  "the placeholder explains the missing install and the linked bin runs the installed binary",
+  { skip: process.platform === "win32" && "needs a POSIX shell" },
+  async (t) => {
+    const testcases = [
+      { name: "absolute link", target: (dir) => path.join(dir, "demo.exe") },
+      {
+        name: "relative link",
+        target: (dir, bin) => path.relative(bin, path.join(dir, "demo.exe")),
+      },
+    ];
+    for (const tc of testcases) {
+      const root = fs.realpathSync(tempDir(t));
+      const dir = path.join(root, "lib", "node_modules", "pkg dir'x");
+      fs.cpSync(pkgDir, dir, { recursive: true });
+      const bin = path.join(root, "bin");
+      const link = path.join(bin, "demo");
+      fs.mkdirSync(bin);
+      fs.symlinkSync(tc.target(dir, bin), link);
 
-    const missing = spawnSync(process.execPath, [launcher], {
-      encoding: "utf8",
-    });
-    assert.equal(missing.status, 2);
-    assert.match(missing.stderr, /^demo: the binary is not installed\./);
-    assert.ok(
-      missing.stderr.includes(installer.fixCommand(dir)),
-      missing.stderr,
-    );
+      const missing = spawnSync("sh", ["-c", '"$0"', link], {
+        encoding: "utf8",
+      });
+      assert.equal(missing.status, 2, `${tc.name}: ${missing.stderr}`);
+      assert.match(missing.stderr, /^demo: the binary is not installed\./);
+      const fix = missing.stderr.trimEnd().split("\n").pop().trim();
+      const parsed = spawnSync(
+        "sh",
+        ["-c", `set -- ${fix}; printf '%s\\n%s' "$1" "$2"`],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        parsed.stdout,
+        `node\n${path.join(dir, "install.js")}`,
+        `${tc.name}: ${fix}`,
+      );
 
-    const binary = installer.binaryPath(dir);
-    fs.mkdirSync(path.dirname(binary), { recursive: true });
-    fs.writeFileSync(
-      binary,
-      `#!${process.execPath}\nconsole.log(process.argv.slice(2).join('|'));process.exit(3);\n`,
-      { mode: 0o755 },
-    );
-    const run = spawnSync(process.execPath, [launcher, "a", "b c"], {
-      encoding: "utf8",
-    });
-    assert.equal(run.status, 3);
-    assert.equal(run.stdout, "a|b c\n");
+      await installer.install(dir, mirrorEnv(mirrorDir), "linux", "x64");
+      const run = spawnSync(link, { encoding: "utf8" });
+      assert.equal(run.status, 0, `${tc.name}: ${run.stderr}`);
+      assert.equal(run.stdout, "linux amd64 binary\n");
+    }
   },
 );
 

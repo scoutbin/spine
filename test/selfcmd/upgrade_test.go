@@ -23,7 +23,7 @@ func TestUpgrade(t *testing.T) {
 
 	const (
 		brewExe = "/opt/homebrew/Cellar/demo/0.1.3/bin/demo"
-		npmExe  = "/usr/local/lib/node_modules/@scoutbin/demo/bin/demo"
+		npmExe  = "/usr/local/lib/node_modules/@scoutbin/demo/demo.exe"
 	)
 
 	testcases := []struct {
@@ -112,7 +112,7 @@ func TestUpgradeNPMHintPerTrack(t *testing.T) {
 			a := &selfcmd.App{
 				Tool: testutil.Tool(), Stdout: &stdout, Stderr: &stderr, Build: withVersion(testInfo, tc.version),
 				LookupEnv:    testutil.EnvOf(nil),
-				Executable:   func() (string, error) { return "/usr/local/lib/node_modules/@scoutbin/demo/bin/demo", nil },
+				Executable:   func() (string, error) { return "/usr/local/lib/node_modules/@scoutbin/demo/demo.exe", nil },
 				EvalSymlinks: func(p string) (string, error) { return p, nil },
 				GitHub:       release.Client{BaseURL: srv.URL, HTTP: srv.Client()},
 			}

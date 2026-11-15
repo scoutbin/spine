@@ -36,9 +36,10 @@ function binaryName(platform) {
   return platform === 'win32' ? `${TOOL}.exe` : TOOL;
 }
 
-// The binary lives under node_modules, where the CLI's channel detection expects npm installs.
-function binaryPath(pkgDir, platform = process.platform) {
-  return path.join(pkgDir, 'vendor', binaryName(platform));
+// The binary replaces the placeholder that package.json's bin entries point at, inside the package
+// directory under node_modules, where the CLI's channel detection expects npm installs.
+function binaryPath(pkgDir) {
+  return path.join(pkgDir, `${TOOL}.exe`);
 }
 
 function fixCommand(pkgDir, platform = process.platform) {
@@ -178,7 +179,6 @@ function fetchBuffer(url, redirectsLeft = MAX_REDIRECTS, get = https.get) {
 }
 
 function writeBinary(dest, content) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
   const temp = `${dest}.${process.pid}.tmp`;
   try {
     fs.writeFileSync(temp, content, { flag: 'wx', mode: 0o755 });
@@ -198,7 +198,7 @@ async function install(pkgDir, env = process.env, platform = process.platform, a
   const archive = await fetchBuffer(`${base}/${name}`);
   verifyChecksum(name, archive);
   const extract = platform === 'win32' ? extractZip : extractTarGz;
-  writeBinary(binaryPath(pkgDir, platform), extract(archive, binaryName(platform)));
+  writeBinary(binaryPath(pkgDir), extract(archive, binaryName(platform)));
 }
 
 module.exports = {

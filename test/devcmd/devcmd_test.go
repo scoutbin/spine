@@ -260,6 +260,7 @@ func TestPackage(t *testing.T) {
 		name      string
 		checksums string // the checksums of v1.2.3 when empty, no file when noChecksums
 		distDir   string // directory below the working directory that holds the checksums; dist when empty
+		omitDoc   string // README.md or LICENSE file left out of the working directory
 		args      []string
 		wantCode  int
 		stderrHas string
@@ -270,6 +271,11 @@ func TestPackage(t *testing.T) {
 		{name: "reads checksums from --dist and writes to --out", distDir: "alt", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--dist", "{dist}", "--out", "{work}/custom"}, wantPath: "custom/homebrew/demo.rb", wantHas: wantFormula},
 		{name: "base url replaces the release URL", args: []string{"package", "homebrew", "--tag", "v1.2.3", "--base-url", "http://127.0.0.1:8080/"}, wantPath: "dist/packages/homebrew/demo.rb", wantHas: []string{`url "http://127.0.0.1:8080/demo_1.2.3_darwin_arm64.tar.gz"`}},
 		{name: "npm renders package.json", args: []string{"package", "npm", "--tag", "v1.2.3"}, wantPath: "dist/packages/npm/package.json", wantHas: []string{`"name": "@scoutbin/demo"`, `"version": "1.2.3"`}},
+		{name: "npm carries the README", args: []string{"package", "npm", "--tag", "v1.2.3"}, wantPath: "dist/packages/npm/README.md", wantHas: []string{"# demo readme"}},
+		{name: "npm carries the LICENSE", args: []string{"package", "npm", "--tag", "v1.2.3"}, wantPath: "dist/packages/npm/LICENSE", wantHas: []string{"demo license text"}},
+		{name: "npm without a README", omitDoc: "README.md", args: []string{"package", "npm", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "README.md"},
+		{name: "npm without a LICENSE", omitDoc: "LICENSE", args: []string{"package", "npm", "--tag", "v1.2.3"}, wantCode: 2, stderrHas: "LICENSE"},
+		{name: "homebrew does not need the README or LICENSE", omitDoc: "README.md", args: []string{"package", "homebrew", "--tag", "v1.2.3"}, wantPath: "dist/packages/homebrew/demo.rb", wantHas: wantFormula},
 		{name: "npm accepts a prerelease tag", checksums: testutil.Checksums("v1.2.3-rc.1"), args: []string{"package", "npm", "--tag", "v1.2.3-rc.1"}, wantPath: "dist/packages/npm/install.js", wantHas: []string{`const VERSION = "1.2.3-rc.1";`, `"demo_1.2.3-rc.1_windows_arm64.zip", "` + fmt.Sprintf("%064x", 6) + `"`}},
 		{name: "npm base url replaces the release URL", args: []string{"package", "npm", "--tag", "v1.2.3", "--base-url", "http://127.0.0.1:8080/"}, wantPath: "dist/packages/npm/install.js", wantHas: []string{`const RELEASE_URL = "http://127.0.0.1:8080";`}},
 		{name: "npm unknown prerelease", args: []string{"package", "npm", "--tag", "v1.2.3-nightly.1"}, wantCode: 2, stderrHas: "unknown prerelease"},
@@ -287,6 +293,7 @@ func TestPackage(t *testing.T) {
 			work := t.TempDir()
 			t.Chdir(work)
 			manifestDir := testutil.WriteManifest(t, testutil.Manifest)
+			writeDocs(t, tc.omitDoc)
 			dist := filepath.Join(work, cmp.Or(tc.distDir, "dist"))
 			if err := os.MkdirAll(dist, 0o755); err != nil {
 				t.Fatal(err)
@@ -364,10 +371,23 @@ func TestDistTags(t *testing.T) {
 	}
 }
 
+func writeDocs(t *testing.T, omit string) {
+	t.Helper()
+	for name, content := range map[string]string{"README.md": "# demo readme\n", "LICENSE": "demo license text\n"} {
+		if name == omit {
+			continue
+		}
+		if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestPackageNpmLayout(t *testing.T) {
 	work := t.TempDir()
 	t.Chdir(work)
 	manifestDir := testutil.WriteManifest(t, testutil.Manifest)
+	writeDocs(t, "")
 	if err := os.MkdirAll("dist", 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -388,13 +408,13 @@ func TestPackageNpmLayout(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Name())
 	}
-	if want := []string{"install.js", "launcher.js", "package.json"}; !slices.Equal(got, want) {
+	if want := []string{"LICENSE", "README.md", "demo.exe", "install.js", "package.json"}; !slices.Equal(got, want) {
 		t.Errorf("package files = %v, want %v", got, want)
 	}
-	if info, err := os.Stat("dist/packages/npm/launcher.js"); err != nil {
+	if info, err := os.Stat("dist/packages/npm/demo.exe"); err != nil {
 		t.Fatal(err)
 	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
-		t.Errorf("launcher.js mode = %v, want 0755", info.Mode().Perm())
+		t.Errorf("demo.exe mode = %v, want 0755", info.Mode().Perm())
 	}
 }
 

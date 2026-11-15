@@ -141,6 +141,13 @@ var packagers = map[string]func(manifest.Tool, render.Release) ([]render.File, e
 	"npm":      render.Npm,
 }
 
+// packageDocs lists the files of the tool repository, relative to the working
+// directory, that the package of a channel carries. Registries show them on the
+// package page.
+var packageDocs = map[string][]string{
+	"npm": {"README.md", "LICENSE"},
+}
+
 func packageCommand() *cli.Command {
 	channels := strings.Join(slices.Sorted(maps.Keys(packagers)), ", ")
 	return &cli.Command{
@@ -178,6 +185,13 @@ func packageCommand() *cli.Command {
 			})
 			if err != nil {
 				return err
+			}
+			for _, name := range packageDocs[channel] {
+				content, err := os.ReadFile(name)
+				if err != nil {
+					return err
+				}
+				files = append(files, render.File{Path: name, Mode: 0o644, Content: content})
 			}
 			return writeFiles(filepath.Join(ctx.String("out"), channel), files)
 		},

@@ -194,7 +194,24 @@ Run these from a checkout of the tool at `vX.Y.Z`. `--online` checks the downloa
 
 ## npm
 
-npm is enabled by `channels.npm.package`. The rendered `package.json` sets `publishConfig.access` to `public` and `engines.node` to `>=22`.
+npm is enabled by `channels.npm.package`. The rendered `package.json` sets `publishConfig.access` to `public`. `engines.node` is `>=22` because the postinstall script, `install.js`, runs under node.
+
+The package contains `package.json`, `install.js`, `<name>.exe`, `README.md` and `LICENSE`. `go tool spine package npm` copies `README.md` and `LICENSE` from the tool repository root and fails if either is missing. `bin` maps the tool name and the alias, if set, to `<name>.exe` on every OS. `<name>.exe` is a placeholder until the postinstall replaces it. No node process runs when the tool runs.
+
+The postinstall, `node install.js`, downloads the release archive for the current platform from GitHub and checks it against the checksums rendered into `install.js`. Only a verified binary is written, to a temporary file in the package directory, and then renamed over `<name>.exe`. If any step fails, the placeholder stays in place and the install fails. Running `node install.js` again downloads and replaces the binary again.
+
+If install scripts do not run, `<name>.exe` stays a placeholder and the tool does not start. The fix is `node <pkgDir>/install.js`, where `<pkgDir>` is the installed package directory, such as `node_modules/<package>`. On POSIX, the placeholder prints this command and exits 2. On Windows, the OS refuses to start the text file and shows its own error. Callers that spawn the tool without a shell get no such message: Node `child_process` without `shell` reports ENOEXEC, and Go `os/exec` reports `exec format error`.
+
+pnpm and Bun print a warning at install when they skip the script. pnpm 11 and later fail a project install with `ERR_PNPM_IGNORED_BUILDS` until the build is approved. Each package manager also has its own recovery:
+
+| Case                                | Recovery                                        |
+| ----------------------------------- | ----------------------------------------------- |
+| npm install with `--ignore-scripts` | `npm rebuild <package> --ignore-scripts=false`  |
+| pnpm project install                | `pnpm approve-builds`                           |
+| pnpm global install                 | `pnpm add -g --allow-build=<package> <package>` |
+| Bun untrusted package               | `bun pm trust <package>`                        |
+
+`node <pkgDir>/install.js` works on every platform and package manager. The only known Windows limitation is `pnpm approve-builds -g` on pnpm 12. For a global pnpm install there, use the pnpm global install row.
 
 The npm job publishes with OIDC trusted publishing, so no npm token is stored. The npm job is the only job with `id-token: write`. It installs npm 11.21.1, set by `NPM_VERSION` in `go-release.yml`, on the Node version pinned by spine's `.node-version`. The same npm runs the dist-tag reconcile. Changing the pin is a change to `go-release.yml`, so it needs a spine release.
 

@@ -119,7 +119,8 @@ jobs:
         run: |
           sh -n generated/install.sh
           node --check packages/npm/install.js
-          node --check packages/npm/launcher.js
+          sh -n packages/npm/example.exe
+          shellcheck -s sh packages/npm/example.exe
           ruby -c packages/homebrew/example.rb
           ruby -ryaml -e 'YAML.load_file(ARGV.fetch(0))' generated/action.yml
       - name: install.ps1 parses
@@ -137,7 +138,7 @@ jobs:
         run: |
           mkdir pack
           tarball=$(npm pack ./packages/npm --pack-destination pack --silent)
-          want=$(printf 'package/%s\n' install.js launcher.js package.json)
+          want=$(printf 'package/%s\n' LICENSE README.md example.exe install.js package.json)
           got=$(tar -tzf "pack/$tarball" | LC_ALL=C sort)
           if [ "$got" != "$want" ]; then
             echo "::error::The tarball holds the wrong files:"
@@ -802,6 +803,10 @@ jobs:
             *) fail "info --json did not report a path under node_modules" ;;
           esac
           case "$info" in
+            *'example.exe"'*) ;;
+            *) fail "info --json did not report a path ending in example.exe" ;;
+          esac
+          case "$info" in
             *'"version":"'"$CI_TAG"'"'*) ;;
             *) fail "info --json did not report version $CI_TAG" ;;
           esac
@@ -817,6 +822,16 @@ jobs:
           rc=0
           example --version >/dev/null || rc=$?
           [ "$rc" -eq 0 ] || fail "example --version exited $rc, not 0"
+
+          if [ "$RUNNER_OS" = Windows ]; then
+            ! sed 's/node_modules//gI' "$prefix/example.cmd" | grep -qi node || fail "example.cmd goes through node"
+          else
+            target=$(node -p "require('node:fs').realpathSync(process.argv[1])" "$prefix/bin/example")
+            case "$target" in
+              */example.exe) ;;
+              *) fail "the example bin resolves to $target, not example.exe" ;;
+            esac
+          fi
       - name: A bad checksum fails the install and leaves no binary
         run: |
           fail() { echo "::error::$*"; exit 1; }
@@ -832,26 +847,32 @@ jobs:
           fi
           cat "$RUNNER_TEMP/tampered.log"
           grep -qF "checksum mismatch" "$RUNNER_TEMP/tampered.log" || fail "unexpected error message"
-          vendor="$(npm root -g --prefix "$prefix")/@scoutbin/example/vendor"
-          if node -e "process.exit(require('node:fs').existsSync(process.argv[1]) ? 0 : 1)" "$vendor"; then
-            fail "a failed install left $vendor behind"
+          pkg="$(npm root -g --prefix "$prefix")/@scoutbin/example"
+          if [ -d "$pkg" ]; then
+            tar -xzOf "$TARBALL" package/example.exe | cmp -s - "$pkg/example.exe" || fail "a failed install replaced the placeholder"
+            if ls "$pkg"/example.exe.*.tmp >/dev/null 2>&1; then fail "a failed install left a temp file behind"; fi
           fi
-      - name: Without install scripts the launcher prints the fix, and the fix works
+      - name: Without install scripts the placeholder prints the fix, and the fix works
         run: |
           fail() { echo "::error::$*"; exit 1; }
           prefix="$RUNNER_TEMP/npm-noscripts"
           npm install -g --ignore-scripts --prefix "$prefix" "$TARBALL"
-          launcher="$(npm root -g --prefix "$prefix")/@scoutbin/example/launcher.js"
+          root="$(npm root -g --prefix "$prefix")"
+          if [ "$RUNNER_OS" = Windows ]; then PATH="$(cygpath -u "$prefix"):$PATH"; else PATH="$prefix/bin:$PATH"; fi
 
           rc=0
-          out=$(node "$launcher" --version 2>&1) || rc=$?
+          out=$(example --version 2>&1) || rc=$?
           echo "$out"
-          [ "$rc" -eq 2 ] || fail "the launcher exited $rc, not 2, without the binary"
-          fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
-          [ -n "$fix" ] || fail "the launcher did not print a fix command"
-          eval "$fix"
+          if [ "$RUNNER_OS" = Windows ]; then
+            [ "$rc" -ne 0 ] || fail "example exited 0 without the binary"
+            node "$root/@scoutbin/example/install.js"
+          else
+            [ "$rc" -eq 2 ] || fail "the placeholder exited $rc, not 2, without the binary"
+            fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
+            [ -n "$fix" ] || fail "the placeholder did not print a fix command"
+            eval "$fix"
+          fi
 
-          if [ "$RUNNER_OS" = Windows ]; then PATH="$(cygpath -u "$prefix"):$PATH"; else PATH="$prefix/bin:$PATH"; fi
           case "$(example --version)" in
             "example $CI_TAG (commit "*) ;;
             *) fail "example did not work after the printed fix" ;;
@@ -917,10 +938,15 @@ jobs:
           rc=0
           out=$(example --version 2>&1) || rc=$?
           echo "$out"
-          [ "$rc" -eq 2 ] || fail "the launcher exited $rc, not 2, without the binary"
-          fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
-          [ -n "$fix" ] || fail "the launcher did not print a fix command"
-          eval "$fix"
+          if [ "$RUNNER_OS" = Windows ]; then
+            [ "$rc" -ne 0 ] || fail "example exited 0 without the binary"
+            node "$(pnpm root -g)/@scoutbin/example/install.js"
+          else
+            [ "$rc" -eq 2 ] || fail "the placeholder exited $rc, not 2, without the binary"
+            fix=$(printf '%s\n' "$out" | sed -n '/To install it, run:/{n;p;}' | sed 's/^  //')
+            [ -n "$fix" ] || fail "the placeholder did not print a fix command"
+            eval "$fix"
+          fi
 
           case "$(example --version)" in
             "example $CI_TAG (commit "*) ;;

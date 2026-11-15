@@ -83,21 +83,28 @@ func Npm(t manifest.Tool, r Release) ([]File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("render install.js: %w", err)
 	}
-	launcher, err := execute("npm-launcher.js.tmpl", d)
+	placeholder, err := execute("npm-placeholder.sh.tmpl", d)
 	if err != nil {
-		return nil, fmt.Errorf("render launcher.js: %w", err)
+		return nil, fmt.Errorf("render %s: %w", npmBinary(t), err)
 	}
 	return []File{
 		{Path: "package.json", Mode: 0o644, Content: packageJSON},
 		{Path: "install.js", Mode: 0o644, Content: install},
-		{Path: "launcher.js", Mode: 0o755, Content: launcher},
+		{Path: npmBinary(t), Mode: 0o755, Content: placeholder},
 	}, nil
 }
 
+// npmBinary is the file the bin entries point at: a placeholder in the tarball
+// that install.js replaces with the native binary. The suffix is the same on
+// every OS so that one package serves them all.
+func npmBinary(t manifest.Tool) string {
+	return t.Name + ".exe"
+}
+
 func npmPackageJSON(t manifest.Tool, version string) ([]byte, error) {
-	bin := map[string]string{t.Name: "launcher.js"}
+	bin := map[string]string{t.Name: npmBinary(t)}
 	if t.Alias != "" {
-		bin[t.Alias] = "launcher.js"
+		bin[t.Alias] = npmBinary(t)
 	}
 	m := npmManifest{
 		Name:        t.Channels.Npm.Package,
@@ -106,7 +113,7 @@ func npmPackageJSON(t manifest.Tool, version string) ([]byte, error) {
 		License:     t.License,
 		Homepage:    "https://github.com/" + t.Repo,
 		Bin:         bin,
-		Files:       []string{"install.js", "launcher.js"},
+		Files:       []string{"install.js", npmBinary(t)},
 		OS:          []string{"darwin", "linux", "win32"},
 		CPU:         []string{"x64", "arm64"},
 	}

@@ -15,7 +15,7 @@ func TestInfo(t *testing.T) {
 	windows := withOS(testInfo, "windows")
 	links := map[string]string{
 		"/usr/local/bin/demo":    "/opt/homebrew/Cellar/demo/0.1.3/bin/demo",
-		"/usr/local/bin/demo-js": "/usr/local/lib/node_modules/@scoutbin/demo/bin/demo",
+		"/usr/local/bin/demo-js": "/usr/local/lib/node_modules/@scoutbin/demo/demo.exe",
 	}
 
 	testcases := []struct {
@@ -39,7 +39,7 @@ func TestInfo(t *testing.T) {
 		{name: "symlink resolves to homebrew", build: testInfo, exe: "/usr/local/bin/demo", args: []string{"info", "--json"},
 			wantStdout: `{"path":"/opt/homebrew/Cellar/demo/0.1.3/bin/demo","channel":"homebrew","version":"v0.1.3"}` + "\n"},
 		{name: "symlink resolves to npm", build: testInfo, exe: "/usr/local/bin/demo-js", args: []string{"info", "--json"},
-			wantStdout: `{"path":"/usr/local/lib/node_modules/@scoutbin/demo/bin/demo","channel":"npm","version":"v0.1.3"}` + "\n"},
+			wantStdout: `{"path":"/usr/local/lib/node_modules/@scoutbin/demo/demo.exe","channel":"npm","version":"v0.1.3"}` + "\n"},
 		{name: "windows unmanaged is unknown", build: windows, exe: `C:\Users\me\bin\demo.exe`, args: []string{"info"},
 			wantStdout: "path:    C:\\Users\\me\\bin\\demo.exe\nchannel: unknown\nversion: v0.1.3\n"},
 		{name: "dev build is unknown", build: devInfo, exe: "/tmp/demo", args: []string{"info", "--json"},

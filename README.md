@@ -70,7 +70,7 @@ Each channel makes the alias available as follows:
 - `install.sh` creates a relative symlink named `<alias>` that points to `<name>`. If anything else already exists at that path, the installer keeps it, prints a warning and exits 0. A rerun leaves a correct link alone.
 - `install.ps1` copies the binary to `<alias>.exe` next to `<name>.exe`. Each run overwrites the copy.
 - Homebrew links the alias with `install_symlink`.
-- npm adds a second `bin` entry, so a global install creates both commands.
+- npm adds a second `bin` entry that points to the same binary, so a global install creates both commands.
 - The GitHub Action gets the alias from the installers. `outputs.path` still points to the canonical executable.
 - Release archives are unchanged and contain only the canonical binary.
 
@@ -224,11 +224,13 @@ Both installers read these variables. `NAME` is the upper-cased tool name.
 The installed binary has these built-in commands:
 
 - `version` prints `<name> <version> (commit <c>, built <date>, <os>/<arch>)`. `--json` prints `version`, `commit`, `build_time`, `os` and `arch`. The root `--version` flag is also available.
-- `info` prints the executable path, the channel (`install.sh`, `npm`, `homebrew` or `unknown`) and the version. `--json` uses the keys `path`, `channel` and `version`.
+- `info` prints the executable path, the channel (`install.sh`, `npm`, `homebrew` or `unknown`) and the version. `--json` uses the keys `path`, `channel` and `version`. On npm installs the path is `.../node_modules/<pkg>/<tool>.exe`.
 - `check` compares the build with the newest release on its track and exits 1 when an update exists. It reads `GITHUB_TOKEN`, without the tool prefix. `--json` uses the keys `current`, `latest`, `update_available` and `track`.
 - `upgrade` runs only on darwin and linux. On an `install.sh` install it replaces the binary in place after the checksum passes, and `--version <tag>` pins a tag. On npm and Homebrew installs it prints the command to run, such as `npm install -g @scoutbin/mytool@latest` or `brew upgrade scoutbin/tap/mytool`. The npm command uses the build's dist-tag (`@latest` for stable, `@rc` for rc builds). On Windows, installs from `install.ps1` report the channel `unknown` and `upgrade` errors, so update by running `install.ps1` again.
 
 Global flags are `--json` and `--no-color`. `--no-color` is also set by `NO_COLOR`. Exit codes are 0 for success, 1 when `check` finds an update, and 2 for any other error.
+
+On an npm, pnpm or Bun install, the tool prints `<tool>: the binary is not installed` when the package install script did not run. On Windows, the OS refuses to start the file instead. Run `node <pkgDir>/install.js`, where `<pkgDir>` is the package directory, such as `node_modules/<pkg>`. To approve the install script in the package manager instead, use `npm rebuild <pkg> --ignore-scripts=false`, `pnpm approve-builds` (or `pnpm add -g --allow-build=<pkg> <pkg>` for a global pnpm install), or `bun pm trust <pkg>`. pnpm 11 and later fail a project install with `ERR_PNPM_IGNORED_BUILDS` until the build is approved.
 
 The GitHub Action runs the installer for the tool. It is defined in the tool repository's `action.yml`, so it is used as `uses: <owner>/<repo>@<ref>`. Its inputs are `version` (takes precedence over `track`), `track` (default `stable`), `install-dir` and `token`. Its outputs are `version` and `path`. The default install directory is `$RUNNER_TEMP/<name>/bin` on Linux and macOS, and `RUNNER_TEMP\<name>\bin` on Windows.
 
