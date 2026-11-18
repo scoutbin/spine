@@ -209,7 +209,7 @@ var hostileValues = []struct {
 	{name: "line and paragraph separators", value: "x\u2028y\u2029z", want: `"x\u2028y\u2029z"`},
 	{name: "script element end", value: "</script>", want: `"\u003c/script\u003e"`},
 	{name: "null and tab", value: "x\x00\ty", want: `"x\u0000\ty"`},
-	{name: "invalid UTF-8 becomes U+FFFD", value: "x\xffy", want: `"x\ufffdy"`},
+	{name: "invalid UTF-8 becomes U+FFFD", value: "x\xffy", want: "\"x\ufffdy\""},
 }
 
 func TestNpmSummaryEscaping(t *testing.T) {

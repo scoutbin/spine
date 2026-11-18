@@ -11,7 +11,7 @@ spine is the shared core for scoutbin tools: a Go module (`github.com/scoutbin/s
 
 ## Go
 
-- Go 1.24, standard library only. `go.mod` has no `require` lines. Keep it that way.
+- Go 1.27.4, standard library only. `go.mod` has no `require` lines. Keep it that way.
 - Classify release tags with `release.ValidatePushedTag`, never `TrackOf`.
 - Before handing work back, run `gofmt`, `go vet` and `go test ./...`.
 - Bump `Contract` in `internal/devcmd` on any incompatible change to the dev CLI output or the `spine.json` schema. The reusable workflows hardcode the value they expect.
