@@ -97,11 +97,72 @@ func TestRun(t *testing.T) {
 					t.Errorf("stdout missing %q:\n%s", s, stdout.String())
 				}
 			}
-			if !strings.Contains(stderr.String(), tc.stderrHas) {
+			if tc.stderrHas != "" && !strings.Contains(stderr.String(), tc.stderrHas) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tc.stderrHas)
 			}
 			if strings.Join(ran, ",") != strings.Join(tc.wantRan, ",") {
 				t.Errorf("tool command ran with %q, want %q", ran, tc.wantRan)
+			}
+		})
+	}
+}
+
+func TestRunWithDefault(t *testing.T) {
+	var got []string
+	def := &cli.Command{
+		Summary: "Digest paths",
+		Flags:   []cli.Flag{{Name: "fail-on", Kind: cli.KindString}},
+		Args:    []cli.Arg{{Name: "path", Variadic: true}},
+		Run: func(ctx *cli.Context) error {
+			got = append(ctx.Args(), "fail-on="+ctx.String("fail-on"))
+			return &cli.ExitError{Code: 1}
+		},
+	}
+
+	testcases := []struct {
+		name      string
+		def       *cli.Command // nil uses the shared def
+		args      []string
+		wantCode  int
+		wantRan   []string
+		stdoutHas string
+		stderrHas string
+	}{
+		{name: "bare invocation runs the default", wantCode: 1, wantRan: []string{"fail-on="}},
+		{name: "paths and root flag", args: []string{"a.log", "--fail-on", "error", "b.log"}, wantCode: 1, wantRan: []string{"a.log", "b.log", "fail-on=error"}},
+		{name: "unknown first word is a path", args: []string{"bogus"}, wantCode: 1, wantRan: []string{"bogus", "fail-on="}},
+		{name: "built-in command wins", args: []string{"version"}, stdoutHas: "demo "},
+		{name: "--version wins over paths", args: []string{"a.log", "--version"}, stdoutHas: "demo "},
+		{name: "--help wins over paths", args: []string{"a.log", "--help"}, stdoutHas: "demo [flags] [path...]\n  demo <command> [flags]"},
+		{name: "root flag with a command is rejected", args: []string{"--fail-on", "error", "version"}, wantCode: 2},
+		{name: "default without Run is rejected", def: &cli.Command{Summary: "No action"}, wantCode: 2, stderrHas: "default command has no Run"},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got = nil
+			var stdout, stderr bytes.Buffer
+			env := spine.Env{
+				Stdout: &stdout, Stderr: &stderr,
+				LookupEnv: testutil.EnvOf(nil),
+				Detect:    func(bool, bool) term.Mode { return term.Mode{} },
+			}
+			d := def
+			if tc.def != nil {
+				d = tc.def
+			}
+			code := spine.RunWithDefault(testutil.Tool(), env, tc.args, d)
+
+			if code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr: %q)", code, tc.wantCode, stderr.String())
+			}
+			if tc.stdoutHas != "" && !strings.Contains(stdout.String(), tc.stdoutHas) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tc.stdoutHas)
+			}
+			if tc.stderrHas != "" && !strings.Contains(stderr.String(), tc.stderrHas) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tc.stderrHas)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.wantRan, ",") {
+				t.Errorf("default ran with %q, want %q", got, tc.wantRan)
 			}
 		})
 	}

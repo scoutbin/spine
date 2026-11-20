@@ -50,8 +50,17 @@ func OSEnv() Env {
 // *cli.ExitError with that code, and 2 on any other error, including a tool
 // command that reuses a built-in name.
 func Run(t Tool, env Env, args []string, cmds ...*cli.Command) int {
+	return RunWithDefault(t, env, args, nil, cmds...)
+}
+
+// RunWithDefault is like Run, with def as the action of the bare command. The
+// root takes def's summary, flags, args and Run; def.Name is not used. A def
+// without a Run exits 2. A first positional that names no command becomes a
+// root positional, and --version and --help take precedence over def.Run.
+func RunWithDefault(t Tool, env Env, args []string, def *cli.Command, cmds ...*cli.Command) int {
 	env = withOSDefaults(env)
 	app := &selfcmd.App{
+		Default:      def,
 		Tool:         t,
 		Stdout:       env.Stdout,
 		Stderr:       env.Stderr,

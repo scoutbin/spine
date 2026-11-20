@@ -25,12 +25,18 @@ type App struct {
 	Executable     func() (string, error)
 	EvalSymlinks   func(string) (string, error)
 	GitHub         release.Client // its Tool is set from App.Tool
+	Default        *cli.Command   // action of the bare command; nil shows help
 }
 
 // Run executes args as the tool: the built-in commands plus cmds. It returns
 // the exit code: 0 on success, the code of a command's *cli.ExitError, or 2 on
-// any other error, including a command in cmds that reuses a built-in name.
+// any other error, including a command in cmds that reuses a built-in name or
+// a Default without a Run.
 func (a *App) Run(args []string, cmds ...*cli.Command) int {
+	if a.Default != nil && a.Default.Run == nil {
+		fmt.Fprintln(a.Stderr, "error: default command has no Run")
+		return 2
+	}
 	builtins := a.Commands()
 	for _, c := range cmds {
 		for _, b := range builtins {
@@ -59,6 +65,19 @@ func (a *App) Run(args []string, cmds ...*cli.Command) int {
 		}
 		_, err := fmt.Fprint(a.Stdout, root.HelpText(&root.Command))
 		return err
+	}
+	if def := a.Default; def != nil {
+		if def.Summary != "" {
+			root.Summary = def.Summary
+		}
+		root.Flags = append(root.Flags, def.Flags...)
+		root.Args = def.Args
+		root.Run = func(ctx *cli.Context) error {
+			if ctx.Bool("version") {
+				return a.version(ctx)
+			}
+			return def.Run(ctx)
+		}
 	}
 	return root.Execute(args, a.LookupEnv, a.Stdout, a.Stderr)
 }
