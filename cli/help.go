@@ -109,21 +109,34 @@ func (r *Root) fail(stderr io.Writer, err error) int {
 }
 
 func (r *Root) usage(cmd *Command) string {
-	if cmd == &r.Command {
+	isRoot := cmd == &r.Command
+	if isRoot && len(cmd.Args) == 0 {
 		return r.Name + " [command] [flags]"
 	}
-	parts := []string{r.Name, cmd.Name, "[flags]"}
+	parts := []string{r.Name}
+	if !isRoot {
+		parts = append(parts, cmd.Name)
+	}
+	parts = append(parts, "[flags]")
 	for _, a := range cmd.Args {
 		parts = append(parts, argLabel(a))
 	}
-	return strings.Join(parts, " ")
+	line := strings.Join(parts, " ")
+	if isRoot {
+		line += "\n  " + r.Name + " <command> [flags]"
+	}
+	return line
 }
 
 func argLabel(a Arg) string {
-	if a.Required {
-		return "<" + a.Name + ">"
+	name := a.Name
+	if a.Variadic {
+		name += "..."
 	}
-	return "[" + a.Name + "]"
+	if a.Required {
+		return "<" + name + ">"
+	}
+	return "[" + name + "]"
 }
 
 func flagRows(flags []Flag) [][2]string {

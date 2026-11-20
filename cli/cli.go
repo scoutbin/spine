@@ -23,9 +23,12 @@ type Flag struct {
 	Help    string
 }
 
+// Arg is a positional argument. A Variadic arg takes every remaining
+// positional and must be the last arg of its command.
 type Arg struct {
 	Name     string
 	Required bool
+	Variadic bool
 	Help     string
 }
 
@@ -40,7 +43,9 @@ type Command struct {
 
 // Root is the top-level command. Globals are accepted before or after the
 // command. The embedded Command's Flags are valid only when no subcommand is
-// given. The built-in --help/-h global flag is always present.
+// given. The built-in --help/-h global flag is always present. When the root
+// declares Args, a first positional that names no command is a root positional,
+// and tokens after "--" are always root positionals.
 type Root struct {
 	Command
 	Globals  []Flag
@@ -60,6 +65,7 @@ type Context struct {
 	values     map[string]string
 	kinds      map[string]Kind
 	positional []string
+	commands   []string
 }
 
 // Bool returns a bool flag value. It panics on an unknown or non-bool flag.
@@ -76,6 +82,9 @@ func (c *Context) String(name string) string {
 
 // Args returns the positional arguments.
 func (c *Context) Args() []string { return c.positional }
+
+// CommandNames returns the names of the root's commands, including help.
+func (c *Context) CommandNames() []string { return c.commands }
 
 // Arg returns the positional argument declared as name, or "" if absent.
 // It panics if the command declares no such arg.
@@ -98,7 +107,8 @@ func (c *Context) mustHave(name string, kind Kind) {
 }
 
 // ExitError lets a command choose its exit code. Execute returns Code and
-// prints nothing for it, so use it for outcomes that are not failures.
+// prints nothing for it, so use it for any outcome whose message the command
+// has already printed.
 type ExitError struct{ Code int }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("exit code %d", e.Code) }

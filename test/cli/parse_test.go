@@ -121,6 +121,71 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParseRootArgs(t *testing.T) {
+	root := func() *cli.Root {
+		r := testRoot()
+		r.Flags = append(r.Flags, cli.Flag{Name: "fail-on", Kind: cli.KindString})
+		r.Args = []cli.Arg{{Name: "path", Variadic: true}}
+		return r
+	}
+	testcases := []struct {
+		name        string
+		args        []string
+		wantCmd     string
+		wantArgs    []string
+		wantStrings map[string]string
+		wantBools   map[string]bool
+		wantErr     cli.ErrorKind
+	}{
+		{name: "no args", wantCmd: "app"},
+		{name: "one path", args: []string{"app.log"}, wantCmd: "app", wantArgs: []string{"app.log"}},
+		{name: "several paths", args: []string{"a.log", "b.log", "c.log"}, wantCmd: "app", wantArgs: []string{"a.log", "b.log", "c.log"}},
+		{name: "lone dash then path", args: []string{"-", "extra.log"}, wantCmd: "app", wantArgs: []string{"-", "extra.log"}},
+		{name: "command wins as first positional", args: []string{"version"}, wantCmd: "version"},
+		{name: "command after a path is a path", args: []string{"app.log", "version"}, wantCmd: "app", wantArgs: []string{"app.log", "version"}},
+		{name: "-- makes a command name a path", args: []string{"--", "version"}, wantCmd: "app", wantArgs: []string{"version"}},
+		{name: "-- passes flag-like tokens", args: []string{"--", "-odd.log", "version"}, wantCmd: "app", wantArgs: []string{"-odd.log", "version"}},
+		{name: "root flag before paths", args: []string{"--fail-on", "error", "app.log"}, wantCmd: "app", wantArgs: []string{"app.log"}, wantStrings: map[string]string{"fail-on": "error"}},
+		{name: "root flag after paths", args: []string{"app.log", "--fail-on", "error"}, wantCmd: "app", wantArgs: []string{"app.log"}, wantStrings: map[string]string{"fail-on": "error"}},
+		{name: "root flag between paths", args: []string{"a.log", "--fail-on=warn", "b.log"}, wantCmd: "app", wantArgs: []string{"a.log", "b.log"}, wantStrings: map[string]string{"fail-on": "warn"}},
+		{name: "root --version after paths", args: []string{"app.log", "--version"}, wantCmd: "app", wantArgs: []string{"app.log"}, wantBools: map[string]bool{"version": true}},
+		{name: "global flag after paths", args: []string{"app.log", "--json"}, wantCmd: "app", wantArgs: []string{"app.log"}, wantBools: map[string]bool{"json": true}},
+		{name: "root flag before command", args: []string{"--fail-on", "error", "version"}, wantErr: cli.UnknownFlag},
+		{name: "root flag after command", args: []string{"version", "--fail-on", "error"}, wantErr: cli.UnknownFlag},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, err := root().Parse(tc.args, nil)
+			if tc.wantErr != 0 {
+				var usage *cli.UsageError
+				if !errors.As(err, &usage) || usage.Kind != tc.wantErr {
+					t.Fatalf("err = %v, want UsageError kind %d", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ctx.Command.Name != tc.wantCmd {
+				t.Errorf("command = %q, want %q", ctx.Command.Name, tc.wantCmd)
+			}
+			if len(ctx.Args()) != len(tc.wantArgs) || len(tc.wantArgs) > 0 && !reflect.DeepEqual(ctx.Args(), tc.wantArgs) {
+				t.Errorf("Args() = %v, want %v", ctx.Args(), tc.wantArgs)
+			}
+			for name, want := range tc.wantStrings {
+				if got := ctx.String(name); got != want {
+					t.Errorf("String(%q) = %q, want %q", name, got, want)
+				}
+			}
+			for name, want := range tc.wantBools {
+				if got := ctx.Bool(name); got != want {
+					t.Errorf("Bool(%q) = %v, want %v", name, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParseKeepsRootAndSubcommandVersionApart(t *testing.T) {
 	testcases := []struct {
 		name string
@@ -186,6 +251,7 @@ func TestParseRejectsInvalidDefinitions(t *testing.T) {
 		{"bool with default", func(r *cli.Root) {
 			r.Globals = append(r.Globals, cli.Flag{Name: "x", Kind: cli.KindBool, Default: "true"})
 		}},
+		{"variadic arg not last", func(r *cli.Root) { r.Commands[2].Args = []cli.Arg{{Name: "a", Variadic: true}, {Name: "b"}} }},
 		{"required after optional", func(r *cli.Root) { r.Commands[2].Args = []cli.Arg{{Name: "a"}, {Name: "b", Required: true}} }},
 	}
 	for _, tc := range testcases {

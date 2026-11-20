@@ -29,6 +29,10 @@ func (r *Root) Parse(args []string, lookupEnv func(string) (string, bool)) (*Con
 		}
 		selecting = false
 		sub := r.find(tok)
+		if sub == nil && len(r.Args) > 0 {
+			positional = append(positional, tok)
+			return nil
+		}
 		if sub == nil {
 			return usageErr(UnknownCommand, "unknown command %q", tok)
 		}
@@ -46,6 +50,7 @@ func (r *Root) Parse(args []string, lookupEnv func(string) (string, bool)) (*Con
 		tok := args[i]
 		switch {
 		case tok == "--":
+			selecting = selecting && len(r.Args) == 0
 			for _, rest := range args[i+1:] {
 				if err := addPositional(rest); err != nil {
 					return nil, err
@@ -92,6 +97,7 @@ func (r *Root) Parse(args []string, lookupEnv func(string) (string, bool)) (*Con
 		values:     make(map[string]string, len(scope)),
 		kinds:      make(map[string]Kind, len(scope)),
 		positional: positional,
+		commands:   r.commandNames(),
 	}
 	for _, f := range scope {
 		ctx.values[f.Name] = resolve(f, given, lookupEnv)
@@ -110,7 +116,8 @@ func (r *Root) Parse(args []string, lookupEnv func(string) (string, bool)) (*Con
 	if len(positional) < required {
 		return nil, usageErr(MissingArgs, "missing required argument <%s>", cmd.Args[len(positional)].Name)
 	}
-	if len(positional) > len(cmd.Args) {
+	variadic := len(cmd.Args) > 0 && cmd.Args[len(cmd.Args)-1].Variadic
+	if !variadic && len(positional) > len(cmd.Args) {
 		return nil, usageErr(TooManyArgs, "unexpected argument %q", positional[len(cmd.Args)])
 	}
 	return ctx, nil
@@ -126,6 +133,14 @@ func (r *Root) find(name string) *Command {
 		return helpCommand
 	}
 	return nil
+}
+
+func (r *Root) commandNames() []string {
+	names := make([]string, 0, len(r.Commands)+1)
+	for _, c := range r.Commands {
+		names = append(names, c.Name)
+	}
+	return append(names, helpCommand.Name)
 }
 
 func scopeOf(globals, local []Flag) []Flag {
@@ -189,7 +204,10 @@ func (r *Root) validate() error {
 			}
 		}
 		optional := false
-		for _, a := range cmd.Args {
+		for i, a := range cmd.Args {
+			if a.Variadic && i != len(cmd.Args)-1 {
+				return fmt.Errorf("cli: command %q: variadic arg <%s> must be last", cmd.Name, a.Name)
+			}
 			if optional && a.Required {
 				return fmt.Errorf("cli: command %q: required arg <%s> follows an optional arg", cmd.Name, a.Name)
 			}

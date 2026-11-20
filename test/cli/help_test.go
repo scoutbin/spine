@@ -118,6 +118,38 @@ Run 'app help <command>' for more information on a command.
 `,
 		},
 		{
+			name: "root with a variadic arg",
+			target: func(r *cli.Root) *cli.Command {
+				r.Args = []cli.Arg{{Name: "path", Variadic: true, Help: "Files to read"}}
+				return &r.Command
+			},
+			want: `Test app
+
+Usage:
+  app [flags] [path...]
+  app <command> [flags]
+
+Commands:
+  version  Print version details
+  upgrade  Upgrade app
+  greet    Greet someone
+  help     Show help for the program or a command
+
+Arguments:
+  [path...]  Files to read
+
+Flags:
+      --version  Print the version
+
+Global flags:
+  -h, --help      Show help
+      --json      Output JSON
+      --no-color  Disable color (env NO_COLOR)
+
+Run 'app help <command>' for more information on a command.
+`,
+		},
+		{
 			name:   "command with flags and no args",
 			target: func(r *cli.Root) *cli.Command { return r.Commands[1] },
 			want: `Upgrade app
